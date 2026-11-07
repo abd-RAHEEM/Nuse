@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title">
+  <title id="title">Nuse mark</title>
+  <path fill="#0b3c26" d="M22 0h84a22 22 0 0 1 22 22v84a22 22 0 0 1-22 22H22A22 22 0 0 1 0 106V22A22 22 0 0 1 22 0Z"/>
+  <path fill="#fff" d="M36 96V38h16v8c6-7 14-11 24-11 15 0 23 10 21 25l-5 36H75l5-32c1-7-2-11-8-11-7 0-13 5-18 12l-4 31H36Z"/>
+</svg>

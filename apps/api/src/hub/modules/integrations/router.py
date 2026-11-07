@@ -1,0 +1,667 @@
+from datetime import UTC, datetime, timedelta
+from urllib.parse import urlencode
+from uuid import UUID, uuid4
+
+import httpx
+from fastapi import APIRouter, Header, HTTPException, Query, Response, status
+from sqlalchemy import select
+
+from hub.common.idempotency import find_replay, save_response
+from hub.config import get_settings
+from hub.deps import CurrentUser, DbSession
+from hub.models import ExternalLink, IntegrationConnection, Job, JobEvent, Resource
+from hub.modules.integrations.crypto import decrypt, encrypt
+from hub.modules.integrations.schemas import (
+    CalendarConfigRequest,
+    CalendarEventRequest,
+    CalendarEventResponse,
+    CalendarList,
+    DatabaseList,
+    IntegrationList,
+    IntegrationSummary,
+    NotionConfigRequest,
+    NotionConnectRequest,
+    NotionExportRequest,
+    NotionExportResponse,
+    NotionExportResult,
+    OAuthStartResponse,
+)
+
+router = APIRouter(prefix="/api/v1/integrations", tags=["integrations"])
+NOTION_VERSION = "2026-03-11"
+GOOGLE_AUTHORIZE_URL = "https://accounts.google.com/o/oauth2/v2/auth"
+
+
+async def _access_token(connection: IntegrationConnection, db: DbSession) -> str:
+    if connection.provider == "notion":
+        if not connection.encrypted_credentials:
+            raise HTTPException(status_code=409, detail="Integration is not connected")
+        return decrypt(connection.encrypted_credentials)
+    if not connection.encrypted_credentials:
+        raise HTTPException(status_code=409, detail="Integration is not connected")
+    settings = get_settings()
+    async with httpx.AsyncClient(timeout=10) as client:
+        result = await client.post(
+            "https://oauth2.googleapis.com/token",
+            data={
+                "client_id": settings.google_client_id,
+                "client_secret": settings.google_client_secret,
+                "refresh_token": decrypt(connection.encrypted_credentials),
+                "grant_type": "refresh_token",
+            },
+        )
+    if result.status_code != 200:
+        connection.status = "needs_reauth"
+        connection.last_error = "Google authorization needs to be renewed"
+        await db.commit()
+        raise HTTPException(status_code=409, detail="Google Calendar needs reauthorization")
+    return result.json()["access_token"]
+
+
+async def _connection(
+    db: DbSession, user_id, provider: str
+) -> IntegrationConnection | None:
+    return (
+        await db.execute(
+            select(IntegrationConnection).where(
+                IntegrationConnection.user_id == user_id,
+                IntegrationConnection.provider == provider,
+            )
+        )
+    ).scalar_one_or_none()
+
+
+def _summary(connection: IntegrationConnection) -> IntegrationSummary:
+    return IntegrationSummary(
+        id=connection.id,
+        provider=connection.provider,
+        status=connection.status,
+        account_label=connection.account_label,
+        config={key: value for key, value in connection.config.items() if key != "oauthState"},
+        scopes=connection.scopes,
+        last_used_at=connection.last_used_at,
+        last_error=connection.last_error,
+    )
+
+
+def _notion_blocks(resource: Resource) -> list[dict]:
+    text = "\n\n".join(
+        value
+        for value in (resource.description, resource.summary, resource.notes)
+        if value
+    )
+    return [
+        {
+            "object": "block",
+            "type": "paragraph",
+            "paragraph": {
+                "rich_text": [{"type": "text", "text": {"content": text[index : index + 1900]}}]
+            },
+        }
+        for index in range(0, len(text), 1900)
+    ]
+
+
+async def _sync_notion_blocks(
+    client: httpx.AsyncClient,
+    token: str,
+    page_id: str,
+    blocks: list[dict],
+    current_ids: list[str],
+) -> list[str]:
+    headers = {"Authorization": f"Bearer {token}", "Notion-Version": NOTION_VERSION}
+    synced_ids: list[str] = []
+    for index, block in enumerate(blocks):
+        block_data = {block["type"]: block[block["type"]]}
+        if index < len(current_ids):
+            result = await client.patch(
+                f"https://api.notion.com/v1/blocks/{current_ids[index]}",
+                headers=headers,
+                json=block_data,
+            )
+            if result.status_code != 200:
+                raise RuntimeError("Notion could not update a resource content block")
+            synced_ids.append(current_ids[index])
+        else:
+            result = await client.patch(
+                f"https://api.notion.com/v1/blocks/{page_id}/children",
+                headers=headers,
+                json={"children": [block]},
+            )
+            if result.status_code != 200:
+                raise RuntimeError("Notion could not add a resource content block")
+            synced_ids.append(result.json()["results"][0]["id"])
+    for block_id in current_ids[len(blocks) :]:
+        result = await client.delete(
+            f"https://api.notion.com/v1/blocks/{block_id}",
+            headers=headers,
+        )
+        if result.status_code != 200:
+            raise RuntimeError("Notion could not remove an outdated resource content block")
+    return synced_ids
+
+
+@router.get("", response_model=IntegrationList)
+async def list_integrations(user: CurrentUser, db: DbSession) -> IntegrationList:
+    rows = (
+        await db.execute(
+            select(IntegrationConnection).where(IntegrationConnection.user_id == user.id)
+        )
+    ).scalars()
+    return IntegrationList(items=[_summary(row) for row in rows])
+
+
+@router.post("/notion/connect", response_model=IntegrationSummary)
+async def connect_notion(
+    payload: NotionConnectRequest, user: CurrentUser, db: DbSession
+) -> IntegrationSummary:
+    try:
+        async with httpx.AsyncClient(timeout=10, follow_redirects=False) as client:
+            result = await client.get(
+                "https://api.notion.com/v1/users/me",
+                headers={
+                    "Authorization": f"Bearer {payload.token}",
+                    "Notion-Version": NOTION_VERSION,
+                },
+            )
+    except httpx.RequestError as error:
+        raise HTTPException(status_code=503, detail="Notion could not be reached") from error
+    if result.status_code != 200:
+        raise HTTPException(status_code=422, detail="Notion token was rejected")
+    body = result.json()
+    connection = await _connection(db, user.id, "notion")
+    if connection is None:
+        connection = IntegrationConnection(user_id=user.id, provider="notion")
+        db.add(connection)
+    connection.status = "connected"
+    connection.encrypted_credentials = encrypt(payload.token)
+    connection.account_label = body.get("name") or body.get("person", {}).get("email")
+    connection.scopes = []
+    connection.config = {}
+    connection.last_error = None
+    await db.commit()
+    await db.refresh(connection)
+    return _summary(connection)
+
+
+@router.get("/notion/databases", response_model=DatabaseList)
+async def notion_databases(
+    user: CurrentUser, db: DbSession, q: str | None = Query(default=None)
+) -> DatabaseList:
+    connection = await _connection(db, user.id, "notion")
+    if connection is None:
+        raise HTTPException(status_code=409, detail="Notion is not connected")
+    body = {"filter": {"property": "object", "value": "database"}}
+    if q:
+        body["query"] = q
+    token = await _access_token(connection, db)
+    async with httpx.AsyncClient(timeout=10) as client:
+        result = await client.post(
+            "https://api.notion.com/v1/search",
+            headers={"Authorization": f"Bearer {token}", "Notion-Version": NOTION_VERSION},
+            json=body,
+        )
+    if result.status_code != 200:
+        raise HTTPException(status_code=502, detail="Notion databases could not be loaded")
+    items = []
+    for item in result.json().get("results", []):
+        title = item.get("title", [])
+        database_title = "".join(part.get("plain_text", "") for part in title)
+        sources = item.get("data_sources", [])
+        for source in sources:
+            items.append(
+                {
+                    "id": source["id"],
+                    "title": source.get("name") or database_title or "Untitled database",
+                }
+            )
+    return DatabaseList(items=items)
+
+
+@router.put("/notion/config", response_model=IntegrationSummary)
+async def configure_notion(
+    payload: NotionConfigRequest, user: CurrentUser, db: DbSession
+) -> IntegrationSummary:
+    connection = await _connection(db, user.id, "notion")
+    if connection is None:
+        raise HTTPException(status_code=409, detail="Notion is not connected")
+    token = await _access_token(connection, db)
+    async with httpx.AsyncClient(timeout=10) as client:
+        result = await client.get(
+            f"https://api.notion.com/v1/data_sources/{payload.data_source_id}",
+            headers={"Authorization": f"Bearer {token}", "Notion-Version": NOTION_VERSION},
+        )
+    if result.status_code != 200:
+        raise HTTPException(status_code=422, detail="That Notion database source is not accessible")
+    properties = result.json().get("properties", {})
+    title_property = next(
+        (name for name, value in properties.items() if value.get("type") == "title"),
+        None,
+    )
+    category_property = properties.get("Category")
+    if (
+        title_property is None
+        or category_property is None
+        or category_property.get("type") != "select"
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="The data source needs a title property and a Category select property.",
+        )
+    source_url_property = properties.get("Source URL")
+    if source_url_property is not None and source_url_property.get("type") != "url":
+        raise HTTPException(
+            status_code=422,
+            detail="The Source URL property must use the URL type.",
+        )
+    connection.config = {
+        "dataSourceId": payload.data_source_id,
+        "titleProperty": title_property,
+        "categoryProperty": "Category",
+        "sourceUrlProperty": "Source URL" if source_url_property else None,
+    }
+    await db.commit()
+    await db.refresh(connection)
+    return _summary(connection)
+
+
+@router.post("/notion/export", response_model=NotionExportResponse)
+async def export_notion(
+    payload: NotionExportRequest,
+    user: CurrentUser,
+    db: DbSession,
+    response: Response,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> NotionExportResponse:
+    request_payload = payload.model_dump(mode="json")
+    replay = await find_replay(
+        db,
+        user.id,
+        idempotency_key,
+        "POST",
+        "/api/v1/integrations/notion/export",
+        request_payload,
+        response,
+    )
+    if replay is not None:
+        return NotionExportResponse.model_validate(replay)
+    connection = await _connection(db, user.id, "notion")
+    if connection is None or not connection.config.get("dataSourceId"):
+        raise HTTPException(status_code=409, detail="Choose a Notion database first")
+    token = await _access_token(connection, db)
+    results: list[NotionExportResult] = []
+    for resource_id in payload.resource_ids:
+        resource = await db.scalar(
+            select(Resource).where(Resource.id == resource_id, Resource.user_id == user.id)
+        )
+        if resource is None:
+            results.append(
+                NotionExportResult(
+                    resource_id=resource_id,
+                    status="failed",
+                    error="Resource not found",
+                )
+            )
+            continue
+        link = await db.scalar(
+            select(ExternalLink).where(
+                ExternalLink.user_id == user.id,
+                ExternalLink.entity_type == "resource",
+                ExternalLink.entity_id == resource.id,
+                ExternalLink.provider == "notion",
+            )
+        )
+        properties = {
+            connection.config["titleProperty"]: {
+                "title": [{"text": {"content": resource.title[:2000]}}]
+            },
+            connection.config["categoryProperty"]: {
+                "select": {"name": resource.category}
+            },
+        }
+        source_url_property = connection.config.get("sourceUrlProperty")
+        if resource.source_url and source_url_property:
+            properties[source_url_property] = {"url": resource.source_url}
+        body = {
+            "parent": {
+                "type": "data_source_id",
+                "data_source_id": connection.config["dataSourceId"],
+            },
+            "properties": properties,
+        }
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                if link:
+                    result = await client.patch(
+                        f"https://api.notion.com/v1/pages/{link.external_id}",
+                        headers={
+                            "Authorization": f"Bearer {token}",
+                            "Notion-Version": NOTION_VERSION,
+                        },
+                        json={"properties": properties},
+                    )
+                    action = "updated"
+                else:
+                    result = await client.post(
+                        "https://api.notion.com/v1/pages",
+                        headers={
+                            "Authorization": f"Bearer {token}",
+                            "Notion-Version": NOTION_VERSION,
+                        },
+                        json=body,
+                    )
+                    action = "created"
+                if result.status_code not in {200, 201}:
+                    raise RuntimeError("Notion rejected the resource")
+                data = result.json()
+                if link is None:
+                    link = ExternalLink(
+                        user_id=user.id,
+                        entity_type="resource",
+                        entity_id=resource.id,
+                        provider="notion",
+                        external_id=data["id"],
+                        external_url=data.get("url"),
+                        last_synced_at=datetime.now(UTC),
+                    )
+                    db.add(link)
+                    await db.commit()
+                block_ids = await _sync_notion_blocks(
+                    client,
+                    token,
+                    link.external_id,
+                    _notion_blocks(resource),
+                    link.link_metadata.get("contentBlockIds", []),
+                )
+                link.link_metadata = {"contentBlockIds": block_ids}
+                link.last_synced_at = datetime.now(UTC)
+                await db.commit()
+            results.append(
+                NotionExportResult(
+                    resource_id=resource.id,
+                    status=action,
+                    notion_url=data.get("url"),
+                )
+            )
+        except (httpx.RequestError, RuntimeError) as error:
+            results.append(
+                NotionExportResult(resource_id=resource.id, status="failed", error=str(error))
+            )
+    connection.last_used_at = datetime.now(UTC)
+    export_response = NotionExportResponse(results=results)
+    await save_response(
+        db,
+        user.id,
+        idempotency_key,
+        "POST",
+        "/api/v1/integrations/notion/export",
+        request_payload,
+        status.HTTP_200_OK,
+        export_response.model_dump(mode="json", by_alias=True),
+    )
+    await db.commit()
+    return export_response
+
+
+@router.get("/google-calendar/oauth/start", response_model=OAuthStartResponse)
+async def google_oauth_start(user: CurrentUser, db: DbSession) -> OAuthStartResponse:
+    settings = get_settings()
+    if not settings.google_client_id or not settings.google_redirect_uri:
+        raise HTTPException(status_code=503, detail="Google Calendar is not configured")
+    state = uuid4().hex
+    connection = await _connection(db, user.id, "google_calendar")
+    if connection is None:
+        connection = IntegrationConnection(user_id=user.id, provider="google_calendar")
+        db.add(connection)
+    connection.status = "connecting"
+    connection.config = {"oauthState": state}
+    await db.commit()
+    query = urlencode(
+        {
+            "client_id": settings.google_client_id,
+            "redirect_uri": settings.google_redirect_uri,
+            "response_type": "code",
+            "scope": "https://www.googleapis.com/auth/calendar.calendarlist.readonly https://www.googleapis.com/auth/calendar.events",
+            "access_type": "offline",
+            "prompt": "consent",
+            "state": state,
+        }
+    )
+    return OAuthStartResponse(auth_url=f"{GOOGLE_AUTHORIZE_URL}?{query}")
+
+
+@router.get("/google-calendar/oauth/callback")
+async def google_oauth_callback(
+    db: DbSession,
+    code: str = Query(min_length=1),
+    state: str = Query(min_length=1),
+) -> Response:
+    connection = (
+        await db.execute(
+            select(IntegrationConnection).where(
+                IntegrationConnection.provider == "google_calendar",
+                IntegrationConnection.status == "connecting",
+                IntegrationConnection.config["oauthState"].as_string() == state,
+            )
+        )
+    ).scalar_one_or_none()
+    if connection is None:
+        raise HTTPException(status_code=400, detail="Invalid Google OAuth state")
+    settings = get_settings()
+    async with httpx.AsyncClient(timeout=10) as client:
+        result = await client.post(
+            "https://oauth2.googleapis.com/token",
+            data={
+                "code": code,
+                "client_id": settings.google_client_id,
+                "client_secret": settings.google_client_secret,
+                "redirect_uri": settings.google_redirect_uri,
+                "grant_type": "authorization_code",
+            },
+        )
+    if result.status_code != 200:
+        connection.status = "error"
+        connection.last_error = "Google authorization failed"
+        await db.commit()
+        raise HTTPException(status_code=422, detail="Google authorization failed")
+    token = result.json()
+    connection.status = "connected"
+    connection.encrypted_credentials = encrypt(token["refresh_token"])
+    connection.scopes = token.get("scope", "").split()
+    connection.config = {}
+    connection.last_error = None
+    connection.last_used_at = datetime.now(UTC)
+    await db.commit()
+    return Response(
+        status_code=status.HTTP_302_FOUND,
+        headers={"Location": f"{settings.web_origin}/settings?connected=google_calendar"},
+    )
+
+
+@router.get("/google-calendar/calendars", response_model=CalendarList)
+async def google_calendars(user: CurrentUser, db: DbSession) -> CalendarList:
+    connection = await _connection(db, user.id, "google_calendar")
+    if connection is None:
+        raise HTTPException(status_code=409, detail="Google Calendar is not connected")
+    token = await _access_token(connection, db)
+    async with httpx.AsyncClient(timeout=10) as client:
+        result = await client.get(
+            "https://www.googleapis.com/calendar/v3/users/me/calendarList",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    if result.status_code != 200:
+        raise HTTPException(status_code=502, detail="Google calendars could not be loaded")
+    return CalendarList(
+        items=[
+            {
+                "id": item["id"],
+                "name": item.get("summary", item["id"]),
+                "primary": item.get("primary", False),
+            }
+            for item in result.json().get("items", [])
+        ]
+    )
+
+
+@router.put("/google-calendar/config", response_model=IntegrationSummary)
+async def configure_google_calendar(
+    payload: CalendarConfigRequest, user: CurrentUser, db: DbSession
+) -> IntegrationSummary:
+    connection = await _connection(db, user.id, "google_calendar")
+    if connection is None:
+        raise HTTPException(status_code=409, detail="Google Calendar is not connected")
+    connection.config = {"calendarId": payload.calendar_id}
+    await db.commit()
+    await db.refresh(connection)
+    return _summary(connection)
+
+
+@router.post("/google-calendar/events", response_model=CalendarEventResponse, status_code=201)
+async def create_google_event(
+    payload: CalendarEventRequest,
+    user: CurrentUser,
+    db: DbSession,
+    response: Response,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> CalendarEventResponse:
+    request_payload = payload.model_dump(mode="json")
+    replay = await find_replay(
+        db,
+        user.id,
+        idempotency_key,
+        "POST",
+        "/api/v1/integrations/google-calendar/events",
+        request_payload,
+        response,
+    )
+    if replay is not None:
+        return CalendarEventResponse.model_validate(replay)
+    connection = await _connection(db, user.id, "google_calendar")
+    if connection is None or not connection.config.get("calendarId"):
+        raise HTTPException(status_code=409, detail="Choose a Google Calendar first")
+    job = await db.scalar(select(Job).where(Job.id == payload.job_id, Job.user_id == user.id))
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    event = None
+    if payload.job_event_id:
+        event = await db.scalar(
+            select(JobEvent).where(
+                JobEvent.id == payload.job_event_id,
+                JobEvent.job_id == job.id,
+                JobEvent.user_id == user.id,
+            )
+        )
+    token = await _access_token(connection, db)
+    body = {
+        "summary": payload.title or f"{job.title} · {job.company}",
+        "description": job.source_url or "",
+    }
+    if payload.all_day:
+        body["start"] = {"date": payload.starts_at.date().isoformat()}
+        end_date = (payload.ends_at or payload.starts_at).date() + timedelta(days=1)
+        body["end"] = {"date": end_date.isoformat()}
+    else:
+        body["start"] = {
+            "dateTime": payload.starts_at.isoformat(),
+            "timeZone": payload.time_zone,
+        }
+        body["end"] = {
+            "dateTime": (payload.ends_at or payload.starts_at).isoformat(),
+            "timeZone": payload.time_zone,
+        }
+    link = None
+    if event:
+        link = await db.scalar(
+            select(ExternalLink).where(
+                ExternalLink.user_id == user.id,
+                ExternalLink.entity_type == "job_event",
+                ExternalLink.entity_id == event.id,
+                ExternalLink.provider == "google_calendar",
+            )
+        )
+    calendar_id = connection.config["calendarId"]
+    async with httpx.AsyncClient(timeout=15) as client:
+        result = await (
+            client.patch(
+                f"https://www.googleapis.com/calendar/v3/calendars/{calendar_id}/events/{link.external_id}",
+                headers={"Authorization": f"Bearer {token}"},
+                json=body,
+            )
+            if link
+            else client.post(
+                f"https://www.googleapis.com/calendar/v3/calendars/{calendar_id}/events",
+                headers={"Authorization": f"Bearer {token}"},
+                json=body,
+            )
+        )
+    if result.status_code not in {200, 201}:
+        raise HTTPException(status_code=502, detail="Google Calendar rejected the event")
+    data = result.json()
+    if link:
+        link.last_synced_at = datetime.now(UTC)
+    elif event:
+        db.add(
+            ExternalLink(
+                user_id=user.id,
+                entity_type="job_event",
+                entity_id=event.id,
+                provider="google_calendar",
+                external_id=data["id"],
+                external_url=data.get("htmlLink"),
+                last_synced_at=datetime.now(UTC),
+            )
+        )
+    event_response = CalendarEventResponse(
+        calendar_event_id=data["id"],
+        html_link=data.get("htmlLink"),
+    )
+    await save_response(
+        db,
+        user.id,
+        idempotency_key,
+        "POST",
+        "/api/v1/integrations/google-calendar/events",
+        request_payload,
+        status.HTTP_201_CREATED,
+        event_response.model_dump(mode="json", by_alias=True),
+    )
+    await db.commit()
+    return event_response
+
+
+@router.delete("/google-calendar/events/{job_event_id}", status_code=204)
+async def delete_google_event(job_event_id: UUID, user: CurrentUser, db: DbSession) -> Response:
+    connection = await _connection(db, user.id, "google_calendar")
+    if connection is None or not connection.config.get("calendarId"):
+        raise HTTPException(status_code=409, detail="Google Calendar is not connected")
+    link = await db.scalar(
+        select(ExternalLink).where(
+            ExternalLink.user_id == user.id,
+            ExternalLink.entity_type == "job_event",
+            ExternalLink.entity_id == job_event_id,
+            ExternalLink.provider == "google_calendar",
+        )
+    )
+    if link:
+        token = await _access_token(connection, db)
+        async with httpx.AsyncClient(timeout=10) as client:
+            result = await client.delete(
+                f"https://www.googleapis.com/calendar/v3/calendars/{connection.config['calendarId']}/events/{link.external_id}",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        if result.status_code not in {200, 204, 404}:
+            raise HTTPException(status_code=502, detail="Google Calendar rejected the deletion")
+        await db.delete(link)
+        await db.commit()
+    return Response(status_code=204)
+
+
+@router.delete("/{provider}", status_code=status.HTTP_204_NO_CONTENT)
+async def disconnect(
+    provider: str, user: CurrentUser, db: DbSession
+) -> None:
+    connection = await _connection(db, user.id, provider)
+    if connection is None:
+        return
+    await db.delete(connection)
+    await db.commit()
