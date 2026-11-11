@@ -20,6 +20,18 @@ workspace.** Capture a URL or text, review the extracted details, and decide
 what to save. Track each job through its stages, keep a timeline of next steps,
 and organize learning resources with tags and collections.
 
+## Capture in three steps
+
+1. **Paste a link or text.** Add a job posting, course, article, or other useful
+   find. Choose whether it is a job or a resource; for a job, set whether it is
+   saved for later or already applied.
+2. **Review the draft.** Nuse builds a draft from the details it can read. Edit
+   the fields, keep the source attached, and check any duplicate warning or
+   extraction issue before moving on.
+3. **Save only when it looks right.** No job or resource is created until you
+   choose to save. Jobs then have a status and timeline for next steps;
+   resources are ready to search and organize.
+
 ## What Nuse includes
 
 - **Jobs:** list and board views, search and filters, application stages,
@@ -60,6 +72,29 @@ The web app proxies API requests through its own origin so session cookies stay
 first-party. The API owns validation, authentication, authorization, and
 database access. Personal records are scoped to the signed-in user; integration
 credentials are encrypted at rest.
+
+## Engineering highlights
+
+- **Hardened session flow:** PINs are HMAC-peppered before Argon2 hashing.
+  Browsers receive a random, HttpOnly session token while PostgreSQL stores only
+  its SHA-256 digest. Write requests require a CSRF header, and repeated failed
+  logins trigger a temporary lockout.
+- **SSRF-aware Smart Capture:** URL fetches accept only HTTP(S), reject
+  non-public IP destinations, validate redirects, and enforce limits of five
+  redirects, 2 MiB per response, and 15 seconds. Capture returns an editable
+  draft with field-level provenance; saving it is a separate user action.
+- **Retry-safe, consistent writes:** create endpoints support user-scoped
+  idempotency keys with request fingerprints and 24-hour replay windows. A job,
+  its optional application, and its initial timeline event are committed in
+  one transaction.
+- **Resumable Gmail sync without a worker service:** read-only sync persists
+  Gmail history and pagination cursors in PostgreSQL, then advances in bounded
+  API steps. It requires an unambiguous company-and-role match; uncertain
+  messages go to a review queue. Sync metadata is stored, not message bodies.
+- **Typed API contract:** FastAPI/Pydantic schemas expose camelCase JSON and
+  generate the committed OpenAPI document. Tests compare that document with
+  the runtime schema; the Next.js client uses typed request and response
+  models.
 
 ## Run locally
 
