@@ -25,5 +25,7 @@ services:
         sync: false
       - key: GOOGLE_REDIRECT_URI
         sync: false
+      - key: GOOGLE_GMAIL_REDIRECT_URI
+        sync: false
       - key: WEB_ORIGIN
         sync: false

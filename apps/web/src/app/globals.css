@@ -18,6 +18,7 @@
   --line-strong: rgb(15 23 21 / 0.22);
   --guide: #c8c1b4;
   --danger: #a64c43;
+  --danger-soft: rgb(166 76 67 / .09);
   --r-sm: 8px;
   --r-md: 14px;
   --r-lg: 20px;
@@ -240,3 +241,85 @@ h3 { font-size: 19px; line-height: 1.2; margin-bottom: 0; }
 .auth-form { display: grid; gap: 9px; }.auth-form label { display: grid; gap: 7px; color: var(--ink-soft); font-size: 12px; }.auth-form input:not([type="checkbox"]) { width: 100%; height: 43px; border: 1px solid var(--line); border-radius: var(--r-sm); color: var(--ink); background: var(--canvas); padding: 0 12px; outline: 0; }.auth-form input:not([type="checkbox"]):focus { border-color: var(--lavender-deep); background: var(--surface); box-shadow: 0 0 0 3px var(--lavender); }.auth-form .pin-input { letter-spacing: .3em; font-size: 17px; }.field-hint { color: var(--ink-faint); font-size: 11px; line-height: 1.4; margin: -2px 0 7px; }.remember-row { display: flex !important; grid-template-columns: auto 1fr; align-items: center; gap: 8px !important; margin: 4px 0 7px; }.remember-row input { accent-color: var(--forest); }.auth-note { display: flex; gap: 9px; align-items: start; padding: 10px 11px; border-radius: var(--r-sm); background: var(--amber); color: var(--amber-ink); margin: 6px 0 7px; }.auth-note span { display: grid; place-items: center; width: 16px; height: 16px; border: 1px solid currentColor; border-radius: 50%; font-size: 10px; }.auth-note p { margin: 0; font-size: 11px; line-height: 1.45; }.auth-error, .auth-success { font-size: 12px; margin: 3px 0; padding: 9px 10px; border-radius: var(--r-sm); }.auth-error { color: var(--danger); background: rgb(166 76 67 / .09); }.auth-success { color: var(--mint-ink); background: var(--mint); }.auth-footer { border-top: 1px solid var(--line); margin-top: 27px; padding-top: 18px; display: flex; justify-content: center; gap: 5px; font-size: 12px; color: var(--ink-faint); }.auth-footer a { color: var(--forest); font-weight: 600; }.auth-footer a:hover { text-decoration: underline; }.auth-side-note { position: absolute; left: max(34px, calc(50% - 560px)); bottom: 56px; color: var(--ink-faint); animation: progress-in .7s .2s var(--ease) both; }.auth-side-note p { color: var(--ink-soft); font: 500 18px/1.2 var(--font-display); margin: 12px 0 8px; }.auth-side-note small { font-size: 11px; }.auth-note-line { display: block; width: 48px; height: 1px; background: var(--forest); }.auth-blueprint { position: absolute; width: 74px; height: 74px; opacity: .7; }.auth-blueprint::before, .auth-blueprint::after { content: ""; position: absolute; background: var(--guide); }.auth-blueprint::before { width: 74px; height: 1px; top: 36px; }.auth-blueprint::after { height: 74px; width: 1px; left: 36px; }.auth-blueprint-a { top: 16%; right: 12%; }.auth-blueprint-b { bottom: 14%; right: 22%; transform: scale(.55); }
 .account-exists { display: grid; gap: 9px; text-align: center; padding: 18px 0 3px; }.account-exists-mark { display: grid; place-items: center; width: 34px; height: 34px; margin: 0 auto 3px; border-radius: 50%; color: var(--forest); background: var(--forest-light); }.account-exists strong { font-family: var(--font-display); font-size: 17px; }.account-exists p { color: var(--ink-soft); font-size: 12px; margin: 0 0 9px; }
 @media (max-width: 680px) { .auth-page { padding: 18px; align-items: start; padding-top: 42px; }.auth-panel { padding: 27px 22px 22px; }.auth-copy { margin-top: 47px; }.auth-copy h1 { font-size: 30px; }.auth-side-note { display: none; }.auth-blueprint-a { top: 8%; right: 7%; transform: scale(.65); } }
+.advanced-job-filters { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; padding-top: 14px; border-top: 1px solid var(--line); }
+.advanced-job-filters > label:not(.archived-filter) { display: grid; gap: 6px; color: var(--ink-soft); font-size: 12px; }
+.advanced-job-filters input[type="date"] { min-width: 0; height: 38px; border: 1px solid var(--line); border-radius: var(--r-sm); padding: 0 9px; color: var(--ink); background: var(--surface); }
+.archived-filter { display: flex; align-items: center; gap: 8px; align-self: end; min-height: 38px; color: var(--ink-soft); font-size: 12px; }
+.archived-filter input { accent-color: var(--forest); }
+.sort-control { display: flex; align-items: center; gap: 8px; color: var(--ink-faint); font-size: 12px; }
+.sort-control select { color: var(--ink); }
+@media (max-width: 680px) { .advanced-job-filters { grid-template-columns: 1fr 1fr; }.sort-control { margin-left: auto; } }
+.settings-profile-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 20px; }
+.settings-profile-form > label { display: grid; gap: 6px; color: var(--ink-soft); font-size: 12px; }
+.settings-profile-form input { width: 100%; height: 40px; border: 1px solid var(--line); border-radius: var(--r-sm); padding: 0 11px; color: var(--ink); background: var(--surface); }
+.settings-profile-form > button { justify-self: start; align-self: end; min-height: 40px; }
+.secondary-button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; border: 1px solid var(--line); border-radius: var(--r-sm); padding: 9px 13px; color: var(--ink); background: var(--surface); cursor: pointer; transition: background .16s var(--ease), border-color .16s var(--ease); }
+.secondary-button:hover { border-color: var(--line-strong); background: var(--canvas); }
+.secondary-button:disabled { color: var(--ink-faint); cursor: not-allowed; }
+.settings-profile-form > .page-support { grid-column: 1 / -1; margin: 0; }
+.settings-export { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 15px 0; border-top: 1px solid var(--line); }
+.settings-export > span, .settings-export > span small { display: block; }
+.settings-export > span small { margin-top: 4px; color: var(--ink-faint); font-size: 12px; }
+.settings-export-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.pin-change-form { margin: 8px 0 18px; padding: 14px; border-radius: var(--r-sm); background: var(--canvas); }
+@media (max-width: 680px) { .settings-profile-form { grid-template-columns: 1fr; }.settings-export { align-items: start; flex-direction: column; }.settings-export-actions { display: grid; grid-template-columns: 1fr 1fr; width: 100%; } }
+.calendar-quick-action { display: flex; align-items: center; justify-content: flex-end; gap: 12px; margin-top: -17px; color: var(--ink-faint); font-size: 12px; }
+.calendar-shortcuts, .timeline-actions { display: flex; align-items: center; gap: 14px; }
+.calendar-modal-backdrop { position: fixed; inset: 0; z-index: 40; display: grid; place-items: center; padding: 18px; background: rgb(15 23 21 / .38); animation: fade-in .16s ease both; }
+.calendar-modal { width: min(520px, 100%); max-height: min(780px, calc(100dvh - 36px)); overflow-y: auto; padding: 24px; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--canvas); box-shadow: var(--shadow-raised); animation: modal-in .22s var(--ease) both; }
+.calendar-modal-heading { display: flex; align-items: start; justify-content: space-between; gap: 15px; margin-bottom: 18px; }
+.calendar-modal-heading h2 { margin: 0; font-size: 25px; }
+.calendar-form { display: grid; gap: 13px; }
+.calendar-field { display: grid; gap: 6px; color: var(--ink-soft); font-size: 12px; }
+.calendar-field input, .calendar-field select, .calendar-field textarea { width: 100%; min-width: 0; border: 1px solid var(--line); border-radius: var(--r-sm); padding: 9px 10px; color: var(--ink); background: var(--surface); }
+.calendar-field input, .calendar-field select { min-height: 40px; }
+.calendar-field textarea { resize: vertical; line-height: 1.45; }
+.calendar-timezone, .calendar-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.calendar-options { align-items: end; }
+.calendar-check { display: flex; align-items: center; gap: 8px; min-height: 40px; color: var(--ink-soft); font-size: 12px; }
+.calendar-check input { accent-color: var(--forest); }
+.calendar-timezone-note { margin: -2px 0 0; color: var(--ink-faint); font-size: 11px; line-height: 1.45; }
+.calendar-actions { display: flex; justify-content: flex-end; gap: 8px; padding-top: 5px; }
+.calendar-error, .calendar-result { margin: 0 0 13px; padding: 10px 12px; border-radius: var(--r-sm); font-size: 12px; line-height: 1.45; }
+.calendar-error { color: var(--danger); background: rgb(166 76 67 / .09); }
+.calendar-result { color: var(--mint-ink); background: var(--mint); }
+.calendar-result a { text-decoration: underline; font-weight: 600; }
+@media (max-width: 560px) {
+  .calendar-modal { padding: 20px 17px; }
+  .calendar-timezone, .calendar-options { grid-template-columns: 1fr; }
+  .calendar-quick-action { align-items: flex-start; flex-direction: column; gap: 3px; margin-top: -15px; }
+  .calendar-actions { flex-direction: column-reverse; }
+  .calendar-actions > button { width: 100%; min-height: 44px; }
+}
+.dashboard-quick-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px 20px; }
+.dashboard-quick-actions .calendar-quick-action { margin-top: 0; }
+.gmail-quick-action { display: flex; align-items: center; flex-wrap: wrap; gap: 7px 10px; color: var(--ink-faint); font-size: 11px; }
+.gmail-sync-button { min-height: 36px; border: 1px solid var(--line); font-size: 12px; }
+.gmail-quick-action small { color: var(--ink-faint); }
+.gmail-sync-notice { flex-basis: 100%; margin: 0; padding: 9px 11px; border-radius: var(--r-sm); color: var(--mint-ink); background: var(--mint); font-size: 12px; line-height: 1.45; }
+.gmail-sync-notice.error, .gmail-review-error { color: var(--danger); background: var(--danger-soft); }
+.gmail-review-panel { display: grid; gap: 0; padding: 18px 21px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface); }
+.gmail-review-heading { display: flex; align-items: center; justify-content: space-between; gap: 15px; padding-bottom: 13px; }
+.gmail-review-heading h2 { margin: 0; font-size: 20px; }
+.gmail-review-heading .eyebrow { margin-bottom: 5px; }
+.gmail-review-heading > span { display: grid; place-items: center; min-width: 28px; height: 28px; border-radius: 50%; background: var(--lavender); color: var(--lavender-deep); font-size: 12px; }
+.gmail-review-item { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 18px; align-items: center; padding: 14px 0; border-top: 1px solid var(--line); }
+.gmail-review-copy { display: grid; gap: 4px; min-width: 0; }
+.gmail-review-copy strong { font-size: 13px; }
+.gmail-review-copy small, .gmail-review-copy time { color: var(--ink-faint); font-size: 11px; }
+.gmail-review-copy > span { overflow: hidden; color: var(--ink-soft); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.gmail-review-actions { display: flex; align-items: center; gap: 7px; }
+.gmail-review-actions select { min-width: 135px; height: 38px; border: 1px solid var(--line); border-radius: var(--r-sm); padding: 0 8px; color: var(--ink); background: var(--surface); }
+.gmail-review-error { margin: 0 0 8px; padding: 9px 11px; border-radius: var(--r-sm); font-size: 12px; }
+.integration-mark.gmail { background: var(--forest-light); color: var(--forest); }
+.gmail-connection-detail { margin: 0 0 18px; }
+@media (max-width: 680px) {
+  .dashboard-quick-actions { align-items: flex-start; flex-direction: column; }
+  .gmail-quick-action { width: 100%; }
+  .gmail-review-panel { padding: 16px 14px; }
+  .gmail-review-item { grid-template-columns: 1fr; gap: 11px; }
+  .gmail-review-actions { flex-wrap: wrap; }
+  .gmail-review-actions label { flex: 1 1 100%; }
+  .gmail-review-actions select { width: 100%; min-height: 42px; }
+  .gmail-review-actions button { min-height: 40px; }
+}

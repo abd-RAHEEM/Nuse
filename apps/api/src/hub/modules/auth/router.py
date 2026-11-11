@@ -97,10 +97,13 @@ def _locked_response() -> HTTPException:
 async def signup(
     payload: AuthRequest, request: Request, response: Response, db: DbSession
 ) -> AuthResponse:
-    has_user = await db.scalar(select(User.id).limit(1))
-    if has_user is not None or not get_settings().allow_signup:
+    if not get_settings().allow_signup:
         raise HTTPException(status_code=403, detail="Signup is disabled")
-    user = User(username=payload.username, pin_hash=hash_pin(payload.pin))
+    user = User(
+        username=payload.username,
+        pin_hash=hash_pin(payload.pin),
+        display_name=payload.display_name.strip() if payload.display_name else None,
+    )
     db.add(user)
     try:
         await db.flush()

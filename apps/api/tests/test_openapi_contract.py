@@ -21,8 +21,21 @@ def test_generated_openapi_has_approved_paths_and_camel_case_projections() -> No
         "/api/v1/collections/{collection_id}",
         "/api/v1/collections/{collection_id}/resources/{resource_id}",
         "/api/v1/dashboard",
+        "/api/v1/settings",
+        "/api/v1/exports/jobs",
+        "/api/v1/exports/resources",
+        "/api/v1/integrations/gmail/oauth/start",
+        "/api/v1/integrations/gmail/oauth/callback",
+        "/api/v1/integrations/gmail",
+        "/api/v1/integrations/gmail/sync",
+        "/api/v1/integrations/gmail/sync/{run_id}/step",
+        "/api/v1/integrations/gmail/review",
+        "/api/v1/integrations/gmail/review/{message_id}",
     }
     assert expected <= paths.keys()
+    assert paths["/api/v1/integrations/gmail"]["delete"]["operationId"].startswith(
+        "disconnect_gmail"
+    )
 
     schemas = spec["components"]["schemas"]
     assert {
@@ -32,6 +45,9 @@ def test_generated_openapi_has_approved_paths_and_camel_case_projections() -> No
         "ResourceDetailResponse",
         "CollectionResponse",
         "TagResponse",
+        "GmailSyncRunResponse",
+        "GmailReviewItem",
+        "GmailReviewRequest",
     } <= schemas.keys()
     assert "nextCursor" in schemas["JobPageResponse"]["properties"]
     assert "sourceUrl" in schemas["ResourceSummaryResponse"]["properties"]

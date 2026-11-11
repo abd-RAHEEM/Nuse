@@ -1,7 +1,7 @@
 import pytest
 from fastapi import HTTPException
 
-from hub.modules.capture.router import build_result, normalize_url
+from hub.modules.capture.router import build_result, normalize_url, source_kind
 from hub.modules.capture.schemas import CreateExtractionRequest
 
 
@@ -27,6 +27,39 @@ def test_normalize_url_keeps_public_url_and_removes_fragment() -> None:
     original, normalized = normalize_url("HTTPS://Example.com/jobs/#details")
     assert original == "HTTPS://Example.com/jobs/#details"
     assert normalized == "https://example.com/jobs"
+
+
+def test_normalize_url_removes_tracking_and_default_port_but_keeps_job_identity() -> None:
+    _, normalized = normalize_url(
+        "HTTPS://boards.greenhouse.io:443/acme/jobs/42"
+        "?utm_source=mail&gh_jid=42&ref=tracker&z=2&a=1#details"
+    )
+
+    assert normalized == "https://boards.greenhouse.io/acme/jobs/42?a=1&gh_jid=42&z=2"
+
+
+def test_normalize_url_keeps_root_slash_and_brackets_ipv6_hosts() -> None:
+    assert normalize_url("https://example.com/")[1] == "https://example.com/"
+    assert normalize_url("https://[2606:4700:4700::1111]:443/")[1] == (
+        "https://[2606:4700:4700::1111]/"
+    )
+
+
+@pytest.mark.parametrize(
+    ("domain", "expected"),
+    [
+        ("lnkd.in", "linkedin"),
+        ("www.linkedin.com", "linkedin"),
+        ("m.linkedin.com", "linkedin"),
+        ("www.instagram.com", "instagram"),
+        ("linkedin.com.attacker.example", "other"),
+        ("example.com", "other"),
+    ],
+)
+def test_source_detection_blocks_social_sources_and_short_links(
+    domain: str, expected: str
+) -> None:
+    assert source_kind(domain) == expected
 
 
 def test_job_text_capture_does_not_invent_company() -> None:

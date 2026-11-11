@@ -10,8 +10,11 @@ def to_camel(value: str) -> str:
 
 
 class AuthRequest(BaseModel):
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
+
     username: str = Field(min_length=3, max_length=32, pattern=r"^[a-zA-Z0-9_.-]+$")
     pin: str = Field(min_length=6, max_length=6)
+    display_name: str | None = Field(default=None, max_length=120)
 
     @field_validator("username")
     @classmethod

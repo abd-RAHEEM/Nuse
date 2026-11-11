@@ -16,10 +16,15 @@ erDiagram
     users ||--o{ extractions : starts
     users ||--o{ integration_connections : configures
     users ||--o{ external_links : maps
+    users ||--o{ gmail_sync_runs : starts
+    users ||--o{ gmail_processed_messages : matches
     users ||--o{ idempotency_keys : uses
 
+    integration_connections ||--o{ gmail_sync_runs : advances
     jobs ||--o| applications : receives
     jobs ||--o{ job_events : has
+    jobs ||--o{ gmail_processed_messages : matched
+    job_events ||--o{ gmail_processed_messages : records
     jobs ||--o{ job_tags : labeled
     tags ||--o{ job_tags : labels
 
@@ -96,8 +101,28 @@ erDiagram
         text status
         jsonb result
     }
+    gmail_sync_runs {
+        uuid id PK
+        uuid user_id FK
+        uuid connection_id FK
+        text mode
+        text status
+        text history_cursor
+        integer messages_scanned
+    }
+    gmail_processed_messages {
+        uuid id PK
+        uuid user_id FK
+        text message_id UK
+        uuid job_id FK
+        uuid event_id FK
+        text subject
+        text status
+    }
 ```
 
 The remaining support tables are `sessions`, `login_attempts`,
 `job_tags`, `resource_tags`, `collection_resources`, `integration_connections`,
-`external_links`, and `idempotency_keys`.
+`external_links`, `gmail_sync_runs`, `gmail_processed_messages`, and
+`idempotency_keys`. Gmail message rows are created only after a strict job
+match; unmatched mail bodies are processed in memory and discarded.

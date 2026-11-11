@@ -46,3 +46,28 @@ def test_plain_text_provider_keeps_missing_job_company_unset() -> None:
     assert result["company"]["value"] is None
     assert result["company"]["provenance"] == "not_found"
     assert trace == {"plain_text": "done"}
+
+
+def test_job_metadata_uses_publisher_and_cleans_company_from_page_title() -> None:
+    payload = CreateExtractionRequest(
+        type="job",
+        url="https://careers.example/role",
+    )
+    body = """
+    <html><head>
+      <title>Spektra Systems LLC - AI-Native Software Engineer - Remote Job</title>
+      <meta property="og:site_name" content="Spektra Systems LLC">
+      <meta property="og:title"
+            content="Spektra Systems LLC - AI-Native Software Engineer - Remote Job">
+    </head><body>Role description</body></html>
+    """
+
+    result, _ = parse_document(payload, body, "text/html", payload.url)
+
+    assert result["company"] == {
+        "value": "Spektra Systems LLC",
+        "provenance": "extracted",
+        "source": "og:site_name",
+    }
+    assert result["title"]["value"] == "AI-Native Software Engineer"
+    assert result["title"]["provenance"] == "extracted"

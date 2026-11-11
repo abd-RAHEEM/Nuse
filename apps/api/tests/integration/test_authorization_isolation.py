@@ -1,5 +1,7 @@
 import asyncio
-from uuid import uuid4
+from datetime import datetime
+from uuid import UUID, uuid4
+from zoneinfo import ZoneInfo
 
 import pytest
 from fastapi.testclient import TestClient
@@ -8,7 +10,7 @@ from sqlalchemy import select
 from hub.config import get_settings
 from hub.db import build_session_factory
 from hub.main import app
-from hub.models import CollectionResource, ResourceTag, Tag, User
+from hub.models import CollectionResource, JobEvent, ResourceTag, Tag, User
 from hub.modules.auth.security import hash_pin
 
 pytestmark = pytest.mark.integration
@@ -76,6 +78,34 @@ def two_users() -> tuple[TestClient, TestClient, str, str, list[str], list[str]]
 
 @pytest.mark.skipif(
     not get_settings().database_url,
+    reason="DATABASE_URL is required for database-backed signup tests",
+)
+def test_signup_remains_available_when_users_exist(monkeypatch: pytest.MonkeyPatch) -> None:
+    from hub.modules import auth
+
+    settings = get_settings().model_copy(update={"allow_signup": True})
+    monkeypatch.setattr(auth.router, "get_settings", lambda: settings)
+    client = _client()
+    user_ids: list[str] = []
+    try:
+        for _ in range(2):
+            response = client.post(
+                "/api/v1/auth/signup",
+                headers=_headers(),
+                json={
+                    "username": f"signup_{uuid4().hex[:12]}",
+                    "pin": "135790",
+                },
+            )
+            assert response.status_code == 201, response.text
+            user_ids.append(response.json()["user"]["id"])
+    finally:
+        _cleanup(user_ids)
+        client.close()
+
+
+@pytest.mark.skipif(
+    not get_settings().database_url,
     reason="DATABASE_URL is required for database-backed isolation tests",
 )
 def test_jobs_are_isolated_between_users(
@@ -104,6 +134,210 @@ def test_jobs_are_isolated_between_users(
         f"/api/v1/jobs/{job_id}", headers=_headers()
     ).status_code == 404
     assert second_user_id
+
+
+@pytest.mark.skipif(
+    not get_settings().database_url,
+    reason="DATABASE_URL is required for database-backed job filter tests",
+)
+def test_job_filters_and_keyset_pagination(
+    two_users: tuple[TestClient, TestClient, str, str, list[str], list[str]],
+) -> None:
+    client, _, _, _, _, _ = two_users
+    records = [
+        {
+            "intent": "applied",
+            "company": "Filter Systems",
+            "title": "Remote platform role",
+            "location": "Singapore",
+            "workMode": "remote",
+            "appliedOn": "2026-11-02",
+            "nextFollowUpOn": "2026-11-12",
+        },
+        {
+            "intent": "applied",
+            "company": "Filter Systems",
+            "title": "Office data role",
+            "location": "Pune",
+            "workMode": "onsite",
+            "appliedOn": "2026-11-05",
+            "nextFollowUpOn": "2026-11-15",
+        },
+        {
+            "intent": "saved",
+            "company": "Different Works",
+            "title": "Saved design role",
+            "location": "Remote",
+        },
+    ]
+    created = [
+        client.post("/api/v1/jobs", headers=_headers(), json=record)
+        for record in records
+    ]
+    assert all(response.status_code == 201 for response in created)
+
+    filtered = client.get(
+        "/api/v1/jobs",
+        params=[
+            ("company", "Filter"),
+            ("status[]", "applied"),
+            ("location", "Remote"),
+            ("appliedFrom", "2026-11-01"),
+            ("appliedTo", "2026-11-10"),
+            ("followUpBefore", "2026-11-13"),
+            ("sort", "next_action"),
+        ],
+    )
+    assert filtered.status_code == 200
+    assert [item["title"] for item in filtered.json()["items"]] == [
+        "Remote platform role"
+    ]
+
+    first_page = client.get(
+        "/api/v1/jobs",
+        params={"company": "Filter", "limit": 1, "sort": "newest"},
+    )
+    assert first_page.status_code == 200
+    cursor = first_page.json()["nextCursor"]
+    assert cursor
+    second_page = client.get(
+        "/api/v1/jobs",
+        params={"company": "Filter", "limit": 1, "sort": "newest", "cursor": cursor},
+    )
+    assert second_page.status_code == 200
+    assert second_page.json()["items"][0]["id"] != first_page.json()["items"][0]["id"]
+
+    invalid_cursor = client.get(
+        "/api/v1/jobs", params={"cursor": "not-a-cursor"}
+    )
+    assert invalid_cursor.status_code == 422
+    assert invalid_cursor.json()["code"] == "validation_error"
+
+
+@pytest.mark.skipif(
+    not get_settings().database_url,
+    reason="DATABASE_URL is required for database-backed status tests",
+)
+def test_job_status_updates_write_timeline_events(
+    two_users: tuple[TestClient, TestClient, str, str, list[str], list[str]],
+) -> None:
+    client, _, _, _, _, _ = two_users
+    created = client.post(
+        "/api/v1/jobs",
+        headers=_headers(),
+        json={"intent": "saved", "company": "Timeline Systems", "title": "QA role"},
+    )
+    assert created.status_code == 201, created.text
+    job_id = created.json()["id"]
+
+    applied = client.patch(
+        f"/api/v1/jobs/{job_id}",
+        headers=_headers(),
+        json={"status": "applied"},
+    )
+    assert applied.status_code == 200, applied.text
+    applied_body = applied.json()
+    assert applied_body["appliedOn"] == datetime.now(
+        ZoneInfo("Asia/Kolkata")
+    ).date().isoformat()
+    assert [event["type"] for event in applied_body["timeline"]] == ["saved", "applied"]
+    assert applied_body["timeline"][-1]["title"] == "Job applied"
+
+    async def applied_event_has_application() -> bool:
+        factory = build_session_factory()
+        assert factory is not None
+        async with factory() as db:
+            event = await db.scalar(
+                select(JobEvent).where(
+                    JobEvent.job_id == UUID(job_id),
+                    JobEvent.type == "applied",
+                )
+            )
+            return event is not None and event.application_id is not None
+
+    assert asyncio.run(applied_event_has_application())
+
+    interviewed = client.patch(
+        f"/api/v1/jobs/{job_id}",
+        headers=_headers(),
+        json={"status": "interview"},
+    )
+    assert interviewed.status_code == 200, interviewed.text
+    timeline = interviewed.json()["timeline"]
+    assert [event["type"] for event in timeline] == ["saved", "applied", "status_changed"]
+    assert timeline[-1]["title"] == "Status changed to Interview"
+
+    unchanged = client.patch(
+        f"/api/v1/jobs/{job_id}",
+        headers=_headers(),
+        json={"status": "interview"},
+    )
+    assert unchanged.status_code == 200, unchanged.text
+    assert len(unchanged.json()["timeline"]) == 3
+
+
+@pytest.mark.skipif(
+    not get_settings().database_url,
+    reason="DATABASE_URL is required for settings and export tests",
+)
+def test_settings_and_exports_are_user_scoped(
+    two_users: tuple[TestClient, TestClient, str, str, list[str], list[str]],
+) -> None:
+    client, other_client, _, _, _, _ = two_users
+    settings_response = client.patch(
+        "/api/v1/settings",
+        headers=_headers(),
+        json={"displayName": "  Local QA  ", "timezone": "Asia/Singapore"},
+    )
+    assert settings_response.status_code == 200, settings_response.text
+    assert settings_response.json() == {
+        "displayName": "Local QA",
+        "timezone": "Asia/Singapore",
+    }
+    assert client.get("/api/v1/settings").json()["displayName"] == "Local QA"
+
+    invalid_timezone = client.patch(
+        "/api/v1/settings",
+        headers=_headers(),
+        json={"timezone": "Not/A_Real_Zone"},
+    )
+    assert invalid_timezone.status_code == 422
+    assert invalid_timezone.json()["code"] == "validation_error"
+
+    job = client.post(
+        "/api/v1/jobs",
+        headers=_headers(),
+        json={
+            "intent": "applied",
+            "company": "Export Systems",
+            "title": "Export test role",
+            "appliedOn": "2026-11-02",
+        },
+    )
+    resource = client.post(
+        "/api/v1/resources",
+        headers=_headers(),
+        json={
+            "title": "Export test resource",
+            "category": "article",
+            "description": "A test entry",
+        },
+    )
+    assert job.status_code == 201
+    assert resource.status_code == 201
+
+    job_export = client.get("/api/v1/exports/jobs?format=json")
+    resource_export = client.get("/api/v1/exports/resources?format=json")
+    assert job_export.status_code == 200
+    assert job_export.headers["content-disposition"].endswith(
+        'filename="nuse-jobs.json"'
+    )
+    assert job_export.json()[0]["timeline"]
+    assert resource_export.json()[0]["title"] == "Export test resource"
+    assert other_client.get("/api/v1/exports/jobs?format=json").json() == []
+    empty_export = other_client.get("/api/v1/exports/resources?format=csv")
+    assert empty_export.status_code == 200
+    assert empty_export.text.startswith("id,title,category,sourceUrl")
 
 
 @pytest.mark.skipif(

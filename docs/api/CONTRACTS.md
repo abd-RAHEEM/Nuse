@@ -118,3 +118,76 @@ is a separate explicit job or resource mutation.
 - Cross-user records return `404`, not `403`.
 - Creating records supports an `Idempotency-Key` header.
 - Mutating requests without the CSRF header are rejected.
+
+## Gmail application updates
+
+Gmail is opt-in and requests only
+`https://www.googleapis.com/auth/gmail.readonly`. The initial sync searches the
+most recent 90 days for likely job-application messages; later syncs use the
+Gmail history cursor. Nuse never sends, moves, or deletes mail and does not call
+Gmail's attachment endpoint. Gmail's full-message response can include small
+attachment parts inline; the parser skips those parts and does not store them.
+Message bodies are processed in memory by local rules and are never stored or
+sent to an external AI service. A message without a strict company-and-role
+match is discarded and is not added to the database.
+
+| Method | Path | Success |
+| --- | --- | --- |
+| POST | `/integrations/gmail/oauth/start` | `200 { authUrl }` |
+| GET | `/integrations/gmail/oauth/callback` | `302` to Settings |
+| DELETE | `/integrations/gmail` | `204` |
+| POST | `/integrations/gmail/sync` | `202 GmailSyncRun` |
+| POST | `/integrations/gmail/sync/{runId}/step` | `200 GmailSyncRun` |
+| GET | `/integrations/gmail/review` | `200 { items: GmailReviewItem[] }` |
+| POST | `/integrations/gmail/review/{messageId}` | `200 { status, jobId }` |
+
+Sync is a durable, resumable database-backed run advanced in bounded API
+steps. Repeated start requests resume the active run. The client advances a
+step at a time and shows the persisted counts. No Redis or worker service is
+required; the run state allows a separate worker to be introduced if measured
+mailbox volume warrants it.
+
+```ts
+type GmailSyncRun = {
+  id: string;
+  status: 'running' | 'completed' | 'failed';
+  mode: 'initial' | 'incremental';
+  messagesScanned: number;
+  jobsMatched: number;
+  jobsUpdated: number;
+  reviewQueued: number;
+  unmatchedDiscarded: number;
+  lastError: string | null;
+  createdAt: string;
+  finishedAt: string | null;
+};
+
+type GmailReviewItem = {
+  messageId: string;
+  jobId: string;
+  company: string;
+  title: string;
+  sender: string | null;
+  subject: string;
+  receivedAt: string;
+  suggestedStatus: JobStatus | null;
+};
+```
+
+Only a strict job match is retained. The stored message record contains its
+Gmail message ID, matched job, sender, subject, received time, suggested stage,
+and processing state; it contains no body or attachment data. Clear matches
+that represent a valid stage advance update the application and write a job
+timeline event in the same transaction. A matched message with an uncertain
+stage goes to review; the owner can apply a stage or ignore it. Gmail history
+IDs and pagination cursors are private server state and are never returned in
+the integration config.
+
+Disconnecting Gmail deletes the saved refresh token, sync runs, and matched
+message metadata; it never changes or deletes Gmail messages.
+
+Because `gmail.readonly` is a restricted Google OAuth scope, a public shared
+OAuth app requires Google's restricted-scope verification and may require a
+security assessment. Self-hosted deployments supply their own Google OAuth
+client credentials and are responsible for Google's current consent-screen
+and verification requirements.

@@ -9,7 +9,15 @@ from sqlalchemy import select
 from hub.common.idempotency import find_replay, save_response
 from hub.config import get_settings
 from hub.deps import CurrentUser, DbSession
-from hub.models import ExternalLink, IntegrationConnection, Job, JobEvent, Resource
+from hub.models import (
+    ExternalLink,
+    IntegrationConnection,
+    Job,
+    JobEvent,
+    Resource,
+    ResourceTag,
+    Tag,
+)
 from hub.modules.integrations.crypto import decrypt, encrypt
 from hub.modules.integrations.schemas import (
     CalendarConfigRequest,
@@ -30,6 +38,15 @@ from hub.modules.integrations.schemas import (
 router = APIRouter(prefix="/api/v1/integrations", tags=["integrations"])
 NOTION_VERSION = "2026-03-11"
 GOOGLE_AUTHORIZE_URL = "https://accounts.google.com/o/oauth2/v2/auth"
+NOTION_CATEGORY_LABELS = {
+    "ai_tool": "AI Tools",
+    "course": "Courses",
+    "certification": "Certifications",
+    "research": "Research",
+    "article": "Articles",
+    "developer_resource": "Developer Resources",
+    "other": "Other",
+}
 
 
 async def _access_token(connection: IntegrationConnection, db: DbSession) -> str:
@@ -40,22 +57,35 @@ async def _access_token(connection: IntegrationConnection, db: DbSession) -> str
     if not connection.encrypted_credentials:
         raise HTTPException(status_code=409, detail="Integration is not connected")
     settings = get_settings()
-    async with httpx.AsyncClient(timeout=10) as client:
-        result = await client.post(
-            "https://oauth2.googleapis.com/token",
-            data={
-                "client_id": settings.google_client_id,
-                "client_secret": settings.google_client_secret,
-                "refresh_token": decrypt(connection.encrypted_credentials),
-                "grant_type": "refresh_token",
-            },
-        )
+    integration_name = "Gmail" if connection.provider == "gmail" else "Google Calendar"
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            result = await client.post(
+                "https://oauth2.googleapis.com/token",
+                data={
+                    "client_id": settings.google_client_id,
+                    "client_secret": settings.google_client_secret,
+                    "refresh_token": decrypt(connection.encrypted_credentials),
+                    "grant_type": "refresh_token",
+                },
+            )
+    except httpx.RequestError as error:
+        raise HTTPException(
+            status_code=503, detail=f"{integration_name} is temporarily unavailable"
+        ) from error
     if result.status_code != 200:
         connection.status = "needs_reauth"
         connection.last_error = "Google authorization needs to be renewed"
         await db.commit()
-        raise HTTPException(status_code=409, detail="Google Calendar needs reauthorization")
-    return result.json()["access_token"]
+        raise HTTPException(
+            status_code=409, detail=f"{integration_name} needs reauthorization"
+        )
+    access_token = result.json().get("access_token")
+    if not isinstance(access_token, str):
+        raise HTTPException(
+            status_code=502, detail=f"{integration_name} returned an invalid token"
+        )
+    return access_token
 
 
 async def _connection(
@@ -77,7 +107,11 @@ def _summary(connection: IntegrationConnection) -> IntegrationSummary:
         provider=connection.provider,
         status=connection.status,
         account_label=connection.account_label,
-        config={key: value for key, value in connection.config.items() if key != "oauthState"},
+        config={
+            key: value
+            for key, value in connection.config.items()
+            if key not in {"oauthState", "historyId"}
+        },
         scopes=connection.scopes,
         last_used_at=connection.last_used_at,
         last_error=connection.last_error,
@@ -100,6 +134,103 @@ def _notion_blocks(resource: Resource) -> list[dict]:
         }
         for index in range(0, len(text), 1900)
     ]
+
+
+def _notion_database_items(results: list[dict]) -> list[dict[str, str]]:
+    items = []
+    for item in results:
+        if item.get("object") != "data_source":
+            continue
+        title = "".join(
+            part.get("plain_text", "") for part in item.get("title", [])
+        )
+        items.append(
+            {
+                "id": item["id"],
+                "title": title or "Untitled database",
+            }
+        )
+    return items
+
+
+def _notion_category_label(category: str) -> str:
+    return NOTION_CATEGORY_LABELS.get(category, category)
+
+
+def _google_event_body(payload: CalendarEventRequest, job: Job | None) -> dict[str, object]:
+    body: dict[str, object] = {
+        "summary": payload.title
+        or (f"{job.title} — {job.company}" if job is not None else ""),
+        "description": payload.description
+        if payload.description is not None
+        else (job.source_url or "" if job is not None else ""),
+        "location": payload.location or "",
+        "reminders": {
+            "useDefault": False,
+            "overrides": [
+                {"method": reminder.method, "minutes": reminder.minutes}
+                for reminder in payload.reminders
+            ],
+        },
+    }
+    if payload.all_day:
+        body["start"] = {"date": payload.starts_at.date().isoformat()}
+        end_date = (payload.ends_at or payload.starts_at).date() + timedelta(days=1)
+        body["end"] = {"date": end_date.isoformat()}
+    else:
+        end_time = payload.ends_at or payload.starts_at + timedelta(hours=1)
+        body["start"] = {
+            "dateTime": payload.starts_at.isoformat(),
+            "timeZone": payload.time_zone,
+        }
+        body["end"] = {
+            "dateTime": end_time.isoformat(),
+            "timeZone": payload.time_zone,
+        }
+    return body
+
+
+async def _ensure_notion_tag_options(
+    client: httpx.AsyncClient,
+    token: str,
+    data_source_id: str,
+    tag_names: list[str],
+) -> None:
+    headers = {"Authorization": f"Bearer {token}", "Notion-Version": NOTION_VERSION}
+    result = await client.get(
+        f"https://api.notion.com/v1/data_sources/{data_source_id}",
+        headers=headers,
+    )
+    if result.status_code != 200:
+        raise RuntimeError("Notion tag options could not be read")
+    tag_property = result.json().get("properties", {}).get("Tags")
+    if not tag_property or tag_property.get("type") != "multi_select":
+        raise RuntimeError("The Notion Tags property is no longer a multi-select field")
+    options = tag_property.get("multi_select", {}).get("options", [])
+    existing = {option.get("name", "").casefold() for option in options}
+    missing = [name for name in tag_names if name.casefold() not in existing]
+    if not missing:
+        return
+    kept_options = [
+        {"id": option["id"]}
+        for option in options
+        if isinstance(option.get("id"), str)
+    ]
+    update = await client.patch(
+        f"https://api.notion.com/v1/data_sources/{data_source_id}",
+        headers=headers,
+        json={
+            "properties": {
+                "Tags": {
+                    "multi_select": {
+                        "options": kept_options + [{"name": name} for name in missing]
+                    }
+                }
+            }
+        },
+    )
+    if update.status_code != 200:
+        raise RuntimeError("Notion could not add the resource's tag options")
 
 
 async def _sync_notion_blocks(
@@ -155,12 +286,18 @@ async def list_integrations(user: CurrentUser, db: DbSession) -> IntegrationList
 async def connect_notion(
     payload: NotionConnectRequest, user: CurrentUser, db: DbSession
 ) -> IntegrationSummary:
+    token = payload.token or get_settings().notion_token
+    if not token:
+        raise HTTPException(
+            status_code=422,
+            detail="Paste a Notion token or configure NOTION_TOKEN on the API server",
+        )
     try:
         async with httpx.AsyncClient(timeout=10, follow_redirects=False) as client:
             result = await client.get(
                 "https://api.notion.com/v1/users/me",
                 headers={
-                    "Authorization": f"Bearer {payload.token}",
+                    "Authorization": f"Bearer {token}",
                     "Notion-Version": NOTION_VERSION,
                 },
             )
@@ -174,7 +311,7 @@ async def connect_notion(
         connection = IntegrationConnection(user_id=user.id, provider="notion")
         db.add(connection)
     connection.status = "connected"
-    connection.encrypted_credentials = encrypt(payload.token)
+    connection.encrypted_credentials = encrypt(token)
     connection.account_label = body.get("name") or body.get("person", {}).get("email")
     connection.scopes = []
     connection.config = {}
@@ -191,7 +328,7 @@ async def notion_databases(
     connection = await _connection(db, user.id, "notion")
     if connection is None:
         raise HTTPException(status_code=409, detail="Notion is not connected")
-    body = {"filter": {"property": "object", "value": "database"}}
+    body = {"filter": {"property": "object", "value": "data_source"}}
     if q:
         body["query"] = q
     token = await _access_token(connection, db)
@@ -203,19 +340,7 @@ async def notion_databases(
         )
     if result.status_code != 200:
         raise HTTPException(status_code=502, detail="Notion databases could not be loaded")
-    items = []
-    for item in result.json().get("results", []):
-        title = item.get("title", [])
-        database_title = "".join(part.get("plain_text", "") for part in title)
-        sources = item.get("data_sources", [])
-        for source in sources:
-            items.append(
-                {
-                    "id": source["id"],
-                    "title": source.get("name") or database_title or "Untitled database",
-                }
-            )
-    return DatabaseList(items=items)
+    return DatabaseList(items=_notion_database_items(result.json().get("results", [])))
 
 
 @router.put("/notion/config", response_model=IntegrationSummary)
@@ -248,17 +373,49 @@ async def configure_notion(
             status_code=422,
             detail="The data source needs a title property and a Category select property.",
         )
+    existing_categories = {
+        option.get("name", "").casefold()
+        for option in category_property.get("select", {}).get("options", [])
+    }
+    missing_categories = [
+        label
+        for label in NOTION_CATEGORY_LABELS.values()
+        if label.casefold() not in existing_categories
+    ]
+    if missing_categories:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Add these options to Category: {', '.join(missing_categories)}.",
+        )
     source_url_property = properties.get("Source URL")
     if source_url_property is not None and source_url_property.get("type") != "url":
         raise HTTPException(
             status_code=422,
             detail="The Source URL property must use the URL type.",
         )
+    optional_properties = {
+        "Description": "rich_text",
+        "Date added": "date",
+        "Tags": "multi_select",
+    }
+    for property_name, expected_type in optional_properties.items():
+        prop = properties.get(property_name)
+        if prop is not None and prop.get("type") != expected_type:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"The {property_name} property must use the "
+                    f"{expected_type.replace('_', ' ')} type."
+                ),
+            )
     connection.config = {
         "dataSourceId": payload.data_source_id,
         "titleProperty": title_property,
         "categoryProperty": "Category",
         "sourceUrlProperty": "Source URL" if source_url_property else None,
+        "descriptionProperty": "Description" if properties.get("Description") else None,
+        "dateAddedProperty": "Date added" if properties.get("Date added") else None,
+        "tagsProperty": "Tags" if properties.get("Tags") else None,
     }
     await db.commit()
     await db.refresh(connection)
@@ -290,6 +447,31 @@ async def export_notion(
         raise HTTPException(status_code=409, detail="Choose a Notion database first")
     token = await _access_token(connection, db)
     results: list[NotionExportResult] = []
+    tag_names: dict[UUID, list[str]] = {}
+    if "Tags" in connection.config:
+        rows = await db.execute(
+            select(ResourceTag.resource_id, Tag.name)
+            .join(Tag, Tag.id == ResourceTag.tag_id)
+            .where(
+                ResourceTag.resource_id.in_(payload.resource_ids),
+                Tag.user_id == user.id,
+            )
+        )
+        for resource_id, tag_name in rows:
+            tag_names.setdefault(resource_id, []).append(tag_name)
+    tag_options_error = None
+    requested_tags = sorted({name for names in tag_names.values() for name in names})
+    if connection.config.get("tagsProperty") and requested_tags:
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                await _ensure_notion_tag_options(
+                    client,
+                    token,
+                    connection.config["dataSourceId"],
+                    requested_tags,
+                )
+        except (httpx.RequestError, RuntimeError) as error:
+            tag_options_error = str(error)
     for resource_id in payload.resource_ids:
         resource = await db.scalar(
             select(Resource).where(Resource.id == resource_id, Resource.user_id == user.id)
@@ -300,6 +482,15 @@ async def export_notion(
                     resource_id=resource_id,
                     status="failed",
                     error="Resource not found",
+                )
+            )
+            continue
+        if tag_names.get(resource.id) and tag_options_error:
+            results.append(
+                NotionExportResult(
+                    resource_id=resource.id,
+                    status="failed",
+                    error=tag_options_error,
                 )
             )
             continue
@@ -316,12 +507,27 @@ async def export_notion(
                 "title": [{"text": {"content": resource.title[:2000]}}]
             },
             connection.config["categoryProperty"]: {
-                "select": {"name": resource.category}
+                "select": {"name": _notion_category_label(resource.category)}
             },
         }
         source_url_property = connection.config.get("sourceUrlProperty")
         if resource.source_url and source_url_property:
             properties[source_url_property] = {"url": resource.source_url}
+        description_property = connection.config.get("descriptionProperty")
+        if description_property and resource.description:
+            properties[description_property] = {
+                "rich_text": [{"text": {"content": resource.description[:2000]}}]
+            }
+        date_added_property = connection.config.get("dateAddedProperty")
+        if date_added_property:
+            properties[date_added_property] = {
+                "date": {"start": resource.created_at.date().isoformat()}
+            }
+        tags_property = connection.config.get("tagsProperty")
+        if tags_property and tag_names.get(resource.id):
+            properties[tags_property] = {
+                "multi_select": [{"name": name} for name in tag_names[resource.id]]
+            }
         body = {
             "parent": {
                 "type": "data_source_id",
@@ -539,38 +745,27 @@ async def create_google_event(
     connection = await _connection(db, user.id, "google_calendar")
     if connection is None or not connection.config.get("calendarId"):
         raise HTTPException(status_code=409, detail="Choose a Google Calendar first")
-    job = await db.scalar(select(Job).where(Job.id == payload.job_id, Job.user_id == user.id))
-    if job is None:
-        raise HTTPException(status_code=404, detail="Job not found")
+    job = None
+    if payload.job_id is not None:
+        job = await db.scalar(
+            select(Job).where(Job.id == payload.job_id, Job.user_id == user.id)
+        )
+        if job is None:
+            raise HTTPException(status_code=404, detail="Job not found")
     event = None
-    if payload.job_event_id:
+    if payload.job_event_id is not None:
         event = await db.scalar(
             select(JobEvent).where(
                 JobEvent.id == payload.job_event_id,
-                JobEvent.job_id == job.id,
+                JobEvent.job_id == payload.job_id,
                 JobEvent.user_id == user.id,
             )
         )
-    token = await _access_token(connection, db)
-    body = {
-        "summary": payload.title or f"{job.title} · {job.company}",
-        "description": job.source_url or "",
-    }
-    if payload.all_day:
-        body["start"] = {"date": payload.starts_at.date().isoformat()}
-        end_date = (payload.ends_at or payload.starts_at).date() + timedelta(days=1)
-        body["end"] = {"date": end_date.isoformat()}
-    else:
-        body["start"] = {
-            "dateTime": payload.starts_at.isoformat(),
-            "timeZone": payload.time_zone,
-        }
-        body["end"] = {
-            "dateTime": (payload.ends_at or payload.starts_at).isoformat(),
-            "timeZone": payload.time_zone,
-        }
+        if event is None:
+            raise HTTPException(status_code=404, detail="Job timeline event not found")
+    body = _google_event_body(payload, job)
     link = None
-    if event:
+    if event is not None:
         link = await db.scalar(
             select(ExternalLink).where(
                 ExternalLink.user_id == user.id,
@@ -580,6 +775,7 @@ async def create_google_event(
             )
         )
     calendar_id = connection.config["calendarId"]
+    token = await _access_token(connection, db)
     async with httpx.AsyncClient(timeout=15) as client:
         result = await (
             client.patch(
@@ -599,7 +795,7 @@ async def create_google_event(
     data = result.json()
     if link:
         link.last_synced_at = datetime.now(UTC)
-    elif event:
+    elif event is not None:
         db.add(
             ExternalLink(
                 user_id=user.id,

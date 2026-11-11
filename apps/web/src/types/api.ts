@@ -48,7 +48,7 @@ export type Page<T> = { items: T[]; nextCursor: string | null };
 
 export type Integration = {
   id: string;
-  provider: "notion" | "google_calendar";
+  provider: "notion" | "google_calendar" | "gmail";
   status: string;
   accountLabel: string | null;
   config: Record<string, unknown>;
@@ -59,6 +59,29 @@ export type Integration = {
 
 export type IntegrationDatabase = { id: string; title: string };
 export type IntegrationCalendar = { id: string; name: string; primary: boolean };
+export type GmailSyncRun = {
+  id: string;
+  status: "running" | "completed" | "failed";
+  mode: "initial" | "incremental";
+  messagesScanned: number;
+  jobsMatched: number;
+  jobsUpdated: number;
+  reviewQueued: number;
+  unmatchedDiscarded: number;
+  lastError: string | null;
+  createdAt: string;
+  finishedAt: string | null;
+};
+export type GmailReviewItem = {
+  messageId: string;
+  jobId: string;
+  company: string;
+  title: string;
+  sender: string | null;
+  subject: string;
+  receivedAt: string;
+  suggestedStatus: JobStatus | null;
+};
 
 export type JobSummary = {
   id: string;

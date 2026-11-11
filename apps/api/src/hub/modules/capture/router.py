@@ -1,6 +1,6 @@
 from datetime import UTC, datetime, timedelta
 from ipaddress import ip_address
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 from uuid import UUID
 
 from fastapi import APIRouter, Header, HTTPException, Response, status
@@ -14,6 +14,23 @@ from hub.modules.capture.providers import parse_document
 from hub.modules.capture.schemas import CreateExtractionRequest, ExtractionResponse
 
 router = APIRouter(prefix="/api/v1/extractions", tags=["capture"])
+_TRACKING_PARAMS = {
+    "fbclid",
+    "gclid",
+    "igshid",
+    "mc_cid",
+    "mc_eid",
+    "ref",
+    "ref_src",
+    "si",
+    "trackingid",
+    "trk",
+}
+_IDENTITY_PARAMS_BY_DOMAIN = {
+    "linkedin.com": {"currentjobid", "jobid"},
+    "greenhouse.io": {"gh_jid"},
+    "boards.greenhouse.io": {"gh_jid"},
+}
 
 
 def normalize_url(value: str) -> tuple[str, str]:
@@ -43,22 +60,54 @@ def normalize_url(value: str) -> tuple[str, str]:
             status_code=422,
             detail="unsafe_url: private and local network URLs cannot be fetched",
         )
+    try:
+        port = parsed.port
+    except ValueError as error:
+        raise HTTPException(
+            status_code=422, detail="The URL contains an invalid port"
+        ) from error
+    normalized_host = hostname.lower()
+    if ":" in normalized_host:
+        normalized_host = f"[{normalized_host}]"
+    if port and port != (443 if parsed.scheme.lower() == "https" else 80):
+        normalized_host += f":{port}"
+
+    host_labels = hostname.lower().rstrip(".").split(".")
+    domain = ".".join(host_labels[-2:]) if len(host_labels) >= 2 else hostname.lower()
+    identity_params = _IDENTITY_PARAMS_BY_DOMAIN.get(domain, set())
+    query = [
+        (key, item)
+        for key, item in parse_qsl(parsed.query, keep_blank_values=True)
+        if not (
+            key.lower().startswith("utm_")
+            or (
+                key.lower() in _TRACKING_PARAMS
+                and key.lower() not in identity_params
+            )
+        )
+    ]
+    path = parsed.path.rstrip("/") or "/"
     normalized = parsed._replace(
         scheme=parsed.scheme.lower(),
-        netloc=hostname.lower() + (f":{parsed.port}" if parsed.port else ""),
+        netloc=normalized_host,
+        path=path,
+        query=urlencode(sorted(query)),
         fragment="",
     )
-    return value, urlunparse(normalized).rstrip("/")
+    return value, urlunparse(normalized)
 
 
 def source_kind(domain: str | None) -> str:
     if not domain:
         return "other"
-    if "linkedin.com" in domain:
+    hostname = domain.lower().rstrip(".")
+    if hostname == "lnkd.in" or hostname.endswith(".lnkd.in"):
         return "linkedin"
-    if "instagram.com" in domain:
+    if hostname == "linkedin.com" or hostname.endswith(".linkedin.com"):
+        return "linkedin"
+    if hostname == "instagram.com" or hostname.endswith(".instagram.com"):
         return "instagram"
-    if "github.com" in domain:
+    if hostname == "github.com" or hostname.endswith(".github.com"):
         return "github"
     return "other"
 

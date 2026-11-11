@@ -195,6 +195,138 @@
             }
           },
           {
+            "name": "status[]",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "saved",
+                      "applied",
+                      "assessment",
+                      "interview",
+                      "offer",
+                      "rejected",
+                      "withdrawn",
+                      "on_hold"
+                    ],
+                    "type": "string"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status[]"
+            }
+          },
+          {
+            "name": "company",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Company"
+            }
+          },
+          {
+            "name": "location",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Location"
+            }
+          },
+          {
+            "name": "tag[]",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "format": "uuid"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Tag[]"
+            }
+          },
+          {
+            "name": "appliedFrom",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Appliedfrom"
+            }
+          },
+          {
+            "name": "appliedTo",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Appliedto"
+            }
+          },
+          {
+            "name": "followUpBefore",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Followupbefore"
+            }
+          },
+          {
             "name": "archived",
             "in": "query",
             "required": false,
@@ -202,6 +334,37 @@
               "type": "boolean",
               "default": false,
               "title": "Archived"
+            }
+          },
+          {
+            "name": "sort",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "enum": [
+                "newest",
+                "oldest",
+                "next_action"
+              ],
+              "type": "string",
+              "default": "newest",
+              "title": "Sort"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
             }
           },
           {
@@ -1308,6 +1471,166 @@
         }
       }
     },
+    "/api/v1/settings": {
+      "get": {
+        "tags": [
+          "settings"
+        ],
+        "summary": "Get Settings",
+        "operationId": "get_settings_api_v1_settings_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SettingsResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "settings"
+        ],
+        "summary": "Update Settings",
+        "operationId": "update_settings_api_v1_settings_patch",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateSettingsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SettingsResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/exports/jobs": {
+      "get": {
+        "tags": [
+          "exports"
+        ],
+        "summary": "Export Jobs",
+        "operationId": "export_jobs_api_v1_exports_jobs_get",
+        "parameters": [
+          {
+            "name": "format",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "enum": [
+                "csv",
+                "json"
+              ],
+              "type": "string",
+              "default": "csv",
+              "title": "Format"
+            }
+          },
+          {
+            "name": "includeArchived",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Includearchived"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/exports/resources": {
+      "get": {
+        "tags": [
+          "exports"
+        ],
+        "summary": "Export Resources",
+        "operationId": "export_resources_api_v1_exports_resources_get",
+        "parameters": [
+          {
+            "name": "format",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "enum": [
+                "csv",
+                "json"
+              ],
+              "type": "string",
+              "default": "csv",
+              "title": "Format"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/dashboard": {
       "get": {
         "tags": [
@@ -1451,6 +1774,255 @@
         "responses": {
           "204": {
             "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/integrations/gmail/oauth/start": {
+      "post": {
+        "tags": [
+          "integrations"
+        ],
+        "summary": "Gmail Oauth Start",
+        "operationId": "gmail_oauth_start_api_v1_integrations_gmail_oauth_start_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OAuthStartResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/integrations/gmail/oauth/callback": {
+      "get": {
+        "tags": [
+          "integrations"
+        ],
+        "summary": "Gmail Oauth Callback",
+        "operationId": "gmail_oauth_callback_api_v1_integrations_gmail_oauth_callback_get",
+        "parameters": [
+          {
+            "name": "state",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "title": "State"
+            }
+          },
+          {
+            "name": "code",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Code"
+            }
+          },
+          {
+            "name": "error",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Error"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/integrations/gmail/sync": {
+      "post": {
+        "tags": [
+          "integrations"
+        ],
+        "summary": "Start Gmail Sync",
+        "operationId": "start_gmail_sync_api_v1_integrations_gmail_sync_post",
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GmailSyncRunResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/integrations/gmail/sync/{run_id}/step": {
+      "post": {
+        "tags": [
+          "integrations"
+        ],
+        "summary": "Advance Gmail Sync",
+        "operationId": "advance_gmail_sync_api_v1_integrations_gmail_sync__run_id__step_post",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Run Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GmailSyncRunResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/integrations/gmail/review": {
+      "get": {
+        "tags": [
+          "integrations"
+        ],
+        "summary": "List Gmail Reviews",
+        "operationId": "list_gmail_reviews_api_v1_integrations_gmail_review_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GmailReviewList"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/integrations/gmail": {
+      "delete": {
+        "tags": [
+          "integrations"
+        ],
+        "summary": "Disconnect Gmail",
+        "operationId": "disconnect_gmail_api_v1_integrations_gmail_delete",
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          }
+        }
+      }
+    },
+    "/api/v1/integrations/gmail/review/{message_id}": {
+      "post": {
+        "tags": [
+          "integrations"
+        ],
+        "summary": "Resolve Gmail Review",
+        "operationId": "resolve_gmail_review_api_v1_integrations_gmail_review__message_id__post",
+        "parameters": [
+          {
+            "name": "message_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Message Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GmailReviewRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "title": "Response Resolve Gmail Review Api V1 Integrations Gmail Review  Message Id  Post"
+                }
+              }
+            }
           },
           "422": {
             "description": "Validation Error",
@@ -2068,6 +2640,18 @@
             "maxLength": 6,
             "minLength": 6,
             "title": "Pin"
+          },
+          "displayName": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 120
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Displayname"
           }
         },
         "type": "object",
@@ -2107,8 +2691,15 @@
       "CalendarEventRequest": {
         "properties": {
           "jobId": {
-            "type": "string",
-            "format": "uuid",
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Jobid"
           },
           "jobEventId": {
@@ -2126,13 +2717,39 @@
           "title": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "string",
+                "maxLength": 1024,
+                "minLength": 1
               },
               {
                 "type": "null"
               }
             ],
             "title": "Title"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 8192
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "location": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 1024
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Location"
           },
           "startsAt": {
             "type": "string",
@@ -2158,13 +2775,22 @@
           },
           "timeZone": {
             "type": "string",
+            "maxLength": 100,
+            "minLength": 1,
             "title": "Timezone",
             "default": "UTC"
+          },
+          "reminders": {
+            "items": {
+              "$ref": "#/components/schemas/CalendarReminder"
+            },
+            "type": "array",
+            "maxItems": 5,
+            "title": "Reminders"
           }
         },
         "type": "object",
         "required": [
-          "jobId",
           "startsAt"
         ],
         "title": "CalendarEventRequest"
@@ -2231,6 +2857,27 @@
           "items"
         ],
         "title": "CalendarList"
+      },
+      "CalendarReminder": {
+        "properties": {
+          "method": {
+            "type": "string",
+            "const": "popup",
+            "title": "Method",
+            "default": "popup"
+          },
+          "minutes": {
+            "type": "integer",
+            "maximum": 40320.0,
+            "minimum": 0.0,
+            "title": "Minutes"
+          }
+        },
+        "type": "object",
+        "required": [
+          "minutes"
+        ],
+        "title": "CalendarReminder"
       },
       "ChangePinRequest": {
         "properties": {
@@ -3213,6 +3860,196 @@
         ],
         "title": "ExtractionResponse"
       },
+      "GmailReviewItem": {
+        "properties": {
+          "messageId": {
+            "type": "string",
+            "title": "Messageid"
+          },
+          "jobId": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Jobid"
+          },
+          "company": {
+            "type": "string",
+            "title": "Company"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "sender": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sender"
+          },
+          "subject": {
+            "type": "string",
+            "title": "Subject"
+          },
+          "receivedAt": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Receivedat"
+          },
+          "suggestedStatus": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Suggestedstatus"
+          }
+        },
+        "type": "object",
+        "required": [
+          "messageId",
+          "jobId",
+          "company",
+          "title",
+          "sender",
+          "subject",
+          "receivedAt",
+          "suggestedStatus"
+        ],
+        "title": "GmailReviewItem"
+      },
+      "GmailReviewList": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/GmailReviewItem"
+            },
+            "type": "array",
+            "title": "Items"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "title": "GmailReviewList"
+      },
+      "GmailReviewRequest": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "applied",
+              "assessment",
+              "interview",
+              "offer",
+              "rejected",
+              "ignore"
+            ],
+            "title": "Status"
+          }
+        },
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "title": "GmailReviewRequest"
+      },
+      "GmailSyncRunResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "running",
+              "completed",
+              "failed"
+            ],
+            "title": "Status"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "initial",
+              "incremental"
+            ],
+            "title": "Mode"
+          },
+          "messagesScanned": {
+            "type": "integer",
+            "title": "Messagesscanned"
+          },
+          "jobsMatched": {
+            "type": "integer",
+            "title": "Jobsmatched"
+          },
+          "jobsUpdated": {
+            "type": "integer",
+            "title": "Jobsupdated"
+          },
+          "reviewQueued": {
+            "type": "integer",
+            "title": "Reviewqueued"
+          },
+          "unmatchedDiscarded": {
+            "type": "integer",
+            "title": "Unmatcheddiscarded"
+          },
+          "lastError": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lasterror"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Createdat"
+          },
+          "finishedAt": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finishedat"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "status",
+          "mode",
+          "messagesScanned",
+          "jobsMatched",
+          "jobsUpdated",
+          "reviewQueued",
+          "unmatchedDiscarded",
+          "lastError",
+          "createdAt",
+          "finishedAt"
+        ],
+        "title": "GmailSyncRunResponse"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -3253,7 +4090,8 @@
             "type": "string",
             "enum": [
               "notion",
-              "google_calendar"
+              "google_calendar",
+              "gmail"
             ],
             "title": "Provider"
           },
@@ -3835,16 +4673,20 @@
       "NotionConnectRequest": {
         "properties": {
           "token": {
-            "type": "string",
-            "maxLength": 500,
-            "minLength": 10,
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 500,
+                "minLength": 10
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Token"
           }
         },
         "type": "object",
-        "required": [
-          "token"
-        ],
         "title": "NotionConnectRequest"
       },
       "NotionExportRequest": {
@@ -4260,6 +5102,31 @@
         ],
         "title": "ResourceSummaryResponse"
       },
+      "SettingsResponse": {
+        "properties": {
+          "displayName": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Displayname"
+          },
+          "timezone": {
+            "type": "string",
+            "title": "Timezone"
+          }
+        },
+        "type": "object",
+        "required": [
+          "displayName",
+          "timezone"
+        ],
+        "title": "SettingsResponse"
+      },
       "TagListResponse": {
         "properties": {
           "items": {
@@ -4626,6 +5493,38 @@
         },
         "type": "object",
         "title": "UpdateResourceRequest"
+      },
+      "UpdateSettingsRequest": {
+        "properties": {
+          "displayName": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 120,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Displayname"
+          },
+          "timezone": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 64,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Timezone"
+          }
+        },
+        "type": "object",
+        "title": "UpdateSettingsRequest"
       },
       "UserResponse": {
         "properties": {

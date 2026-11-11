@@ -15,3 +15,18 @@ coverage/
 playwright-report/
 test-results/
 *.log
+
+# Local editor and AI-assistant instructions
+.vscode/
+.idea/
+.fleet/
+CLAUDE.md
+AGENTS.md
+
+# Private planning and design notes
+docs/BLUEPRINT.md
+docs/DECISIONS.md
+docs/PROGRESS.md
+docs/PHASE1_REVIEW.md
+docs/design/
+docs/GMAIL_INTEGRATION_TEST_REPORT.md

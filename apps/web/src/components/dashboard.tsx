@@ -3,7 +3,13 @@
 /* eslint-disable @next/next/no-html-link-for-pages */
 import { useEffect, useState, type CSSProperties } from "react";
 import { api, apiMode, ApiError } from "@/lib/api/client";
-import type { DashboardResponse, Extraction, ResourceCategory } from "@/types/api";
+import type {
+  DashboardResponse,
+  Extraction,
+  GmailSyncRun,
+  ResourceCategory,
+} from "@/types/api";
+import { CalendarEventDialog } from "@/components/calendar-event-dialog";
 import { Icon } from "./nuse-shell";
 
 const captureSteps = ["Reading the source", "Parsing useful details", "Structuring your draft", "Ready to review"];
@@ -106,9 +112,117 @@ const resources = [
   { title: "The ML engineer’s field guide", source: "GitHub · Developer resource", age: "3 days ago", glyph: "⌘" },
 ];
 
+function GmailSyncAction() {
+  const [connected, setConnected] = useState(false);
+  const [connectionLoaded, setConnectionLoaded] = useState(false);
+  const [lastSyncAt, setLastSyncAt] = useState<string | null>(null);
+  const [syncRun, setSyncRun] = useState<GmailSyncRun | null>(null);
+  const [syncing, setSyncing] = useState(false);
+  const [notice, setNotice] = useState("");
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let active = true;
+    void api.integrations.list()
+      .then(({ items }) => {
+        if (!active) return;
+        const gmail = items.find((item) => item.provider === "gmail");
+        setConnected(gmail?.status === "connected");
+        const value = gmail?.config.lastSyncAt;
+        setLastSyncAt(typeof value === "string" ? value : null);
+      })
+      .catch((loadError: unknown) => {
+        if (active) {
+          setError(
+            loadError instanceof ApiError
+              ? loadError.message
+              : "Gmail connection status could not be loaded.",
+          );
+        }
+      })
+      .finally(() => {
+        if (active) setConnectionLoaded(true);
+      });
+    return () => { active = false; };
+  }, []);
+
+  const sync = async () => {
+    setSyncing(true);
+    setError("");
+    setNotice("");
+    try {
+      let run = await api.integrations.startGmailSync();
+      setSyncRun(run);
+      let steps = 0;
+      while (run.status === "running" && steps < 300) {
+        if (steps > 0) {
+          await new Promise<void>((resolve) => window.setTimeout(resolve, 250));
+        }
+        run = await api.integrations.advanceGmailSync(run.id);
+        setSyncRun(run);
+        steps += 1;
+      }
+      if (run.status === "completed") {
+        setNotice(
+          `Checked ${run.messagesScanned} messages. Updated ${run.jobsUpdated} jobs, queued ${run.reviewQueued} for review, and discarded ${run.unmatchedDiscarded} unmatched.`,
+        );
+        setLastSyncAt(run.finishedAt);
+      } else if (run.status === "running") {
+        setNotice(
+          `Sync paused after ${run.messagesScanned} messages. Sync again to resume.`,
+        );
+      } else {
+        setError(run.lastError ?? "Gmail sync could not be completed.");
+      }
+    } catch (syncError) {
+      setError(
+        syncError instanceof ApiError
+          ? syncError.message
+          : "Gmail could not be synced. The saved progress can be resumed.",
+      );
+    } finally {
+      setSyncing(false);
+    }
+  };
+
+  return (
+    <div className="gmail-quick-action">
+      {connected ? (
+        <button
+          className="quiet-button gmail-sync-button"
+          type="button"
+          onClick={() => void sync()}
+          disabled={syncing || !connectionLoaded}
+        >
+          {syncing
+            ? `Checking ${syncRun?.messagesScanned ?? 0} messages…`
+            : "Sync Gmail"}
+        </button>
+      ) : (
+        <a className="quiet-button gmail-sync-button" href="/settings">
+          Connect Gmail
+        </a>
+      )}
+      {lastSyncAt && !syncing && (
+        <small>
+          Last synced {new Date(lastSyncAt).toLocaleString("en-IN")}
+        </small>
+      )}
+      {notice && <p className="gmail-sync-notice" role="status">{notice}</p>}
+      {error && <p className="gmail-sync-notice error" role="alert">{error}</p>}
+      {syncRun?.status === "completed" && syncRun.reviewQueued > 0 && (
+        <a className="text-button" href="/jobs">
+          Review matched emails
+        </a>
+      )}
+    </div>
+  );
+}
+
 export function DashboardContent() {
   const [liveDashboard, setLiveDashboard] = useState<DashboardResponse | null>(null);
   const [liveError, setLiveError] = useState("");
+  const [calendarOpen, setCalendarOpen] = useState(false);
 
   useEffect(() => {
     if (apiMode !== "live") return;
@@ -141,8 +255,18 @@ export function DashboardContent() {
   return <div className="dashboard-stack">
     <div className="hero-intro"><div><p className="eyebrow">{apiMode === "live" ? "Your private desk" : "Saturday, November 1"}</p><h2>Good {apiMode === "live" ? "day" : "evening"}, {liveDashboard?.user.displayName ?? liveDashboard?.user.username ?? "Abdul"}.</h2><p className="hero-copy">{liveError || (liveDashboard ? `${liveDashboard.counts.applicationsTracked} applications are in motion.` : "One small action now makes next week easier.")}</p></div><span className="coordinate">X: 142&nbsp;&nbsp;Y: 08</span></div>
     <CaptureCard />
-    <div className="metric-row"><a href="/jobs?status=applied" className="metric-card metric-amber"><span className="metric-label">Applications tracked</span><strong>{liveDashboard?.counts.applicationsTracked ?? (apiMode === "live" ? "—" : 18)}</strong><span>Keep the next action visible <Icon name="arrow" size={14} /></span></a><a href="/jobs?status=interview" className="metric-card metric-mint"><span className="metric-label">Interviews active</span><strong>{liveDashboard?.counts.interviewsActive ?? (apiMode === "live" ? "—" : 3)}</strong><span>Review the week ahead <Icon name="arrow" size={14} /></span></a><div className="metric-note"><span className="note-mark">+</span><span>Keep the desk current<br /><b>Review, then move one forward.</b></span></div></div>
+    {apiMode === "live" && (
+      <div className="dashboard-quick-actions">
+        <div className="calendar-quick-action">
+          <span>Have an interview, assessment, or reminder to schedule?</span>
+          <button className="text-button" onClick={() => setCalendarOpen(true)}>Add a calendar event</button>
+        </div>
+        <GmailSyncAction />
+      </div>
+    )}
+    <div className="metric-row"><a href="/jobs?status%5B%5D=applied" className="metric-card metric-amber"><span className="metric-label">Applications tracked</span><strong>{liveDashboard?.counts.applicationsTracked ?? (apiMode === "live" ? "—" : 18)}</strong><span>Keep the next action visible <Icon name="arrow" size={14} /></span></a><a href="/jobs?status%5B%5D=interview" className="metric-card metric-mint"><span className="metric-label">Interviews active</span><strong>{liveDashboard?.counts.interviewsActive ?? (apiMode === "live" ? "—" : 3)}</strong><span>Review the week ahead <Icon name="arrow" size={14} /></span></a><div className="metric-note"><span className="note-mark">+</span><span>Keep the desk current<br /><b>Review, then move one forward.</b></span></div></div>
     <div className="dashboard-grid"><section className="ledger-section"><div className="section-heading"><div><p className="eyebrow">Next on the desk</p><h3>Coming up</h3></div><a href="/jobs">View all <Icon name="arrow" size={14} /></a></div>{displayUpcoming.map((item) => <a className="upcoming-row" href="/jobs" key={`${item.company}-${item.role}`}><span className={`company-mark ${item.tone}`}>{item.initials}</span><span className="row-main"><strong>{item.role}</strong><small>{item.company} · {item.type}</small></span><span className="row-date">{item.date}<Icon name="arrow" size={14} /></span></a>)}</section><section className="ledger-section"><div className="section-heading"><div><p className="eyebrow">Filed recently</p><h3>Resources</h3></div><a href="/resources">Open library <Icon name="arrow" size={14} /></a></div>{displayResources.map((item) => <a className="resource-row" href="/resources" key={item.title}><span className="resource-glyph">{item.glyph}</span><span className="row-main"><strong>{item.title}</strong><small>{item.source}</small></span><span className="row-date">{item.age}</span></a>)}</section></div>
     <section className="activity-section"><div className="section-heading"><div><p className="eyebrow">A quiet record</p><h3>Recent activity</h3></div><a href="/jobs">Timeline <Icon name="arrow" size={14} /></a></div><div className="activity-line">{apiMode === "live" ? (liveDashboard?.recentActivity ?? []).map((item) => <div className="activity-item" key={item.id}><span className="timeline-dot filled" /><span><strong>{item.title}</strong><small>{item.job.company} · {new Date(item.occurredAt).toLocaleString("en-IN")}</small></span></div>) : <><div className="activity-item"><span className="timeline-dot filled" /><span><strong>Applied to ML Platform Engineer</strong><small>Kite Systems · Today, 10:42</small></span></div><div className="activity-item"><span className="timeline-dot" /><span><strong>Saved a developer resource</strong><small>GitHub · Yesterday, 18:20</small></span></div><div className="activity-item"><span className="timeline-dot" /><span><strong>Moved Applied AI Intern to interview</strong><small>Mango Labs · Oct 29, 14:06</small></span></div></>}</div></section>
+    {calendarOpen && <CalendarEventDialog onClose={() => setCalendarOpen(false)} />}
   </div>;
 }

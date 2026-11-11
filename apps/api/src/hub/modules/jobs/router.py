@@ -1,28 +1,93 @@
+import base64
+import binascii
+import json
 from datetime import UTC, date, datetime
+from typing import Annotated, Literal, TypedDict
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Header, HTTPException, Query, Response, status
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, or_, select, tuple_
 
 from hub.common.idempotency import find_replay, save_response
 from hub.deps import CurrentUser, DbSession
-from hub.models import Application, ExternalLink, Extraction, Job, JobEvent, JobTag, Tag
+from hub.models import Application, ExternalLink, Extraction, Job, JobEvent, JobTag, Tag, User
 from hub.modules.jobs.schemas import (
     CreateEventRequest,
     CreateJobRequest,
     JobDetailResponse,
     JobEventResponse,
     JobPageResponse,
+    JobStatus,
     JobSummaryResponse,
     UpdateEventRequest,
     UpdateJobRequest,
 )
 
 router = APIRouter(prefix="/api/v1/jobs", tags=["jobs"])
+JobSort = Literal["newest", "oldest", "next_action"]
+
+
+def _today(user: User) -> date:
+    return datetime.now(ZoneInfo(user.timezone)).date()
+
+
+class JobCursor(TypedDict):
+    sort: JobSort
+    id: str
+    createdAt: str
+    actionOn: str | None
 
 
 def _status(application: Application | None) -> str:
     return application.status if application else "saved"
+
+
+def _encode_cursor(
+    sort: JobSort, job: Job, application: Application | None
+) -> str:
+    data: JobCursor = {
+        "sort": sort,
+        "id": str(job.id),
+        "createdAt": job.created_at.isoformat(),
+        "actionOn": None,
+    }
+    if sort == "next_action":
+        action_on = (
+            application.next_follow_up_on if application else None
+        ) or job.deadline
+        data["actionOn"] = action_on.isoformat() if action_on else None
+    encoded = json.dumps(data, separators=(",", ":")).encode()
+    return base64.urlsafe_b64encode(encoded).decode().rstrip("=")
+
+
+def _decode_cursor(cursor: str, sort: JobSort) -> JobCursor:
+    try:
+        padded = cursor + "=" * (-len(cursor) % 4)
+        data = json.loads(base64.urlsafe_b64decode(padded))
+        if not isinstance(data, dict):
+            raise ValueError
+        if (
+            data.get("sort") != sort
+            or not isinstance(data.get("id"), str)
+            or not isinstance(data.get("createdAt"), str)
+        ):
+            raise ValueError
+        action_on = data.get("actionOn")
+        if action_on is not None and not isinstance(action_on, str):
+            raise ValueError
+        UUID(data["id"])
+        datetime.fromisoformat(data["createdAt"])
+        if sort == "next_action" and action_on is not None:
+            date.fromisoformat(action_on)
+        return {
+            "sort": sort,
+            "id": data["id"],
+            "createdAt": data["createdAt"],
+            "actionOn": action_on,
+        }
+    except (ValueError, KeyError, TypeError, json.JSONDecodeError, binascii.Error):
+        raise HTTPException(status_code=422, detail="Invalid cursor") from None
 
 
 def _summary(
@@ -108,24 +173,125 @@ async def list_jobs(
     user: CurrentUser,
     db: DbSession,
     q: str | None = None,
+    status_filter: Annotated[list[JobStatus] | None, Query(alias="status[]")] = None,
+    company: str | None = None,
+    location: str | None = None,
+    tag_ids: Annotated[list[UUID] | None, Query(alias="tag[]")] = None,
+    applied_from: Annotated[date | None, Query(alias="appliedFrom")] = None,
+    applied_to: Annotated[date | None, Query(alias="appliedTo")] = None,
+    follow_up_before: Annotated[date | None, Query(alias="followUpBefore")] = None,
     archived: bool = False,
+    sort: JobSort = "newest",
+    cursor: str | None = None,
     limit: int = Query(default=25, ge=1, le=100),
 ) -> JobPageResponse:
+    action_on = func.coalesce(Application.next_follow_up_on, Job.deadline)
     query = (
         select(Job, Application)
         .outerjoin(Application, Application.job_id == Job.id)
         .where(Job.user_id == user.id)
-        .order_by(Job.created_at.desc())
-        .limit(limit)
     )
     if not archived:
         query = query.where(Job.archived_at.is_(None))
     if q:
-        query = query.where(Job.title.ilike(f"%{q}%") | Job.company.ilike(f"%{q}%"))
-    rows = (await db.execute(query)).all()
+        pattern = f"%{q}%"
+        query = query.where(Job.title.ilike(pattern) | Job.company.ilike(pattern))
+    if company:
+        query = query.where(Job.company.ilike(f"%{company}%"))
+    if location:
+        normalized_location = (
+            "onsite" if location.strip().lower() in {"on-site", "onsite"} else location
+        )
+        query = query.where(
+            or_(
+                Job.location.ilike(f"%{location}%"),
+                Job.work_mode.ilike(f"%{normalized_location}%"),
+            )
+        )
+    status_values = status_filter or []
+    if status_values:
+        conditions = []
+        if "saved" in status_values:
+            conditions.append(Application.id.is_(None))
+        applied_statuses = [value for value in status_values if value != "saved"]
+        if applied_statuses:
+            conditions.append(Application.status.in_(applied_statuses))
+        query = query.where(or_(*conditions))
+    if tag_ids:
+        query = query.where(
+            Job.id.in_(
+                select(JobTag.job_id).where(JobTag.tag_id.in_(tag_ids))
+            )
+        )
+    if applied_from:
+        query = query.where(Application.applied_on >= applied_from)
+    if applied_to:
+        query = query.where(Application.applied_on <= applied_to)
+    if follow_up_before:
+        query = query.where(Application.next_follow_up_on <= follow_up_before)
+
+    cursor_data = _decode_cursor(cursor, sort) if cursor else None
+    if sort == "newest":
+        query = query.order_by(Job.created_at.desc(), Job.id.desc())
+        if cursor_data:
+            created_at = datetime.fromisoformat(cursor_data["createdAt"])
+            job_id = UUID(cursor_data["id"])
+            query = query.where(tuple_(Job.created_at, Job.id) < (created_at, job_id))
+    elif sort == "oldest":
+        query = query.order_by(Job.created_at.asc(), Job.id.asc())
+        if cursor_data:
+            created_at = datetime.fromisoformat(cursor_data["createdAt"])
+            job_id = UUID(cursor_data["id"])
+            query = query.where(tuple_(Job.created_at, Job.id) > (created_at, job_id))
+    else:
+        query = query.order_by(
+            action_on.asc().nulls_last(),
+            Job.created_at.desc(),
+            Job.id.desc(),
+        )
+        if cursor_data:
+            created_at = datetime.fromisoformat(cursor_data["createdAt"])
+            job_id = UUID(cursor_data["id"])
+            action_value = cursor_data.get("actionOn")
+            tie_breaker = or_(
+                Job.created_at < created_at,
+                (Job.created_at == created_at) & (Job.id < job_id),
+            )
+            if action_value is None:
+                query = query.where(action_on.is_(None), tie_breaker)
+            else:
+                action_date = date.fromisoformat(action_value)
+                query = query.where(
+                    or_(
+                        action_on > action_date,
+                        (action_on == action_date) & tie_breaker,
+                        action_on.is_(None),
+                    )
+                )
+    rows = (await db.execute(query.limit(limit + 1))).all()
+    has_more = len(rows) > limit
+    rows = rows[:limit]
+    job_ids = [job.id for job, _ in rows]
+    tag_rows = (
+        await db.execute(
+            select(JobTag.job_id, Tag.id, Tag.name)
+            .join(Tag, Tag.id == JobTag.tag_id)
+            .where(JobTag.job_id.in_(job_ids), Tag.user_id == user.id)
+        )
+    ).all() if job_ids else []
+    tags_by_job: dict[UUID, list[dict[str, str]]] = {}
+    for job_id, tag_id, tag_name in tag_rows:
+        tags_by_job.setdefault(job_id, []).append(
+            {"id": str(tag_id), "name": tag_name}
+        )
     return JobPageResponse(
-        items=[_summary(job, application) for job, application in rows],
-        next_cursor=None,
+        items=[
+            _summary(job, application, tags_by_job.get(job.id, []))
+            for job, application in rows
+        ],
+        next_cursor=(
+            _encode_cursor(sort, *rows[-1]) if has_more and rows else None
+        ),
     )
 
 
@@ -167,7 +333,7 @@ async def create_job(
             user_id=user.id,
             job_id=job.id,
             status="applied",
-            applied_on=payload.applied_on or date.today(),
+            applied_on=payload.applied_on or _today(user),
             next_follow_up_on=payload.next_follow_up_on,
         )
         db.add(application)
@@ -249,13 +415,36 @@ async def update_job(
         application = (
             await db.execute(select(Application).where(Application.job_id == job.id))
         ).scalar_one_or_none()
+        previous_status = _status(application)
         if payload.status == "saved" and application:
             raise HTTPException(status_code=409, detail="Cannot move an application back to saved")
         if payload.status != "saved" and application is None:
-            application = Application(user_id=user.id, job_id=job.id, status=payload.status)
+            application = Application(
+                user_id=user.id,
+                job_id=job.id,
+                status=payload.status,
+                applied_on=_today(user) if payload.status == "applied" else None,
+            )
             db.add(application)
+            await db.flush()
         elif application:
             application.status = payload.status
+        if payload.status != previous_status:
+            is_initial_application = (
+                previous_status == "saved" and payload.status == "applied"
+            )
+            db.add(
+                JobEvent(
+                    user_id=user.id,
+                    job_id=job.id,
+                    application_id=application.id if application else None,
+                    type="applied" if is_initial_application else "status_changed",
+                    title="Job applied"
+                    if is_initial_application
+                    else f"Status changed to {payload.status.replace('_', ' ').title()}",
+                    occurred_at=datetime.now(UTC),
+                )
+            )
     await db.commit()
     await db.refresh(job)
     return await _detail(db, job)

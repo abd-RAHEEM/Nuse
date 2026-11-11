@@ -9,6 +9,9 @@ import type {
   Integration,
   IntegrationCalendar,
   IntegrationDatabase,
+  GmailReviewItem,
+  GmailSyncRun,
+  JobStatus,
 } from "@/types/api";
 
 export type ApiMode = "mock" | "live";
@@ -78,6 +81,37 @@ async function request<T>(
   return (await response.json()) as T;
 }
 
+async function downloadFile(path: string, filename: string): Promise<void> {
+  const response = await fetch(`/api/v1${path}`, {
+    headers: { Accept: "application/json, text/csv" },
+    credentials: "include",
+  });
+  if (!response.ok) {
+    let message = `Request failed (${response.status})`;
+    let code: string | null = null;
+    try {
+      const problem = (await response.json()) as {
+        detail?: string;
+        title?: string;
+        code?: string;
+      };
+      message = problem.detail ?? problem.title ?? message;
+      code = problem.code ?? null;
+    } catch {
+      // Keep the HTTP status message when the server did not return JSON.
+    }
+    throw new ApiError(message, response.status, code);
+  }
+  const objectUrl = URL.createObjectURL(await response.blob());
+  const link = document.createElement("a");
+  link.href = objectUrl;
+  link.download = filename;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+}
+
 const json = (body: unknown): RequestInit => ({
   method: "POST",
   body: JSON.stringify(body),
@@ -89,12 +123,21 @@ export const api = {
       const result = await request<AuthResponse>("/auth/login", json({ username, pin }));
       return result.user;
     },
-    async signup(username: string, pin: string): Promise<ApiUser> {
-      const result = await request<AuthResponse>("/auth/signup", json({ username, pin }));
+    async signup(username: string, pin: string, displayName?: string): Promise<ApiUser> {
+      const result = await request<AuthResponse>(
+        "/auth/signup",
+        json({ username, pin, displayName }),
+      );
       return result.user;
     },
     async me(): Promise<ApiUser> {
       return request<ApiUser>("/auth/me");
+    },
+    async changePin(currentPin: string, newPin: string): Promise<void> {
+      await request<void>(
+        "/auth/change-pin",
+        json({ currentPin, newPin }),
+      );
     },
     async logout(): Promise<void> {
       await request<void>("/auth/logout", json({}));
@@ -105,11 +148,66 @@ export const api = {
       return request<DashboardResponse>("/dashboard");
     },
   },
+  settings: {
+    get(): Promise<{ displayName: string | null; timezone: string }> {
+      return request<{ displayName: string | null; timezone: string }>("/settings");
+    },
+    update(input: {
+      displayName?: string | null;
+      timezone?: string;
+    }): Promise<{ displayName: string | null; timezone: string }> {
+      return request<{ displayName: string | null; timezone: string }>(
+        "/settings",
+        { method: "PATCH", body: JSON.stringify(input) },
+      );
+    },
+  },
+  exports: {
+    jobs(format: "csv" | "json", includeArchived = false): Promise<void> {
+      const query = new URLSearchParams({
+        format,
+        includeArchived: String(includeArchived),
+      });
+      return downloadFile(
+        `/exports/jobs?${query.toString()}`,
+        `nuse-jobs.${format}`,
+      );
+    },
+    resources(format: "csv" | "json"): Promise<void> {
+      return downloadFile(
+        `/exports/resources?format=${format}`,
+        `nuse-resources.${format}`,
+      );
+    },
+  },
   jobs: {
-    list(params: { q?: string; archived?: boolean } = {}): Promise<Page<JobSummary>> {
+    list(params: {
+      q?: string;
+      status?: string[];
+      company?: string;
+      location?: string;
+      tags?: string[];
+      appliedFrom?: string;
+      appliedTo?: string;
+      followUpBefore?: string;
+      archived?: boolean;
+      sort?: "newest" | "oldest" | "next_action";
+      cursor?: string;
+      limit?: number;
+    } = {}): Promise<Page<JobSummary>> {
       const query = new URLSearchParams();
       if (params.q) query.set("q", params.q);
-      if (params.archived) query.set("archived", "true");
+      for (const value of params.status ?? []) query.append("status[]", value);
+      if (params.company) query.set("company", params.company);
+      if (params.location) query.set("location", params.location);
+      for (const value of params.tags ?? []) query.append("tag[]", value);
+      if (params.appliedFrom) query.set("appliedFrom", params.appliedFrom);
+      if (params.appliedTo) query.set("appliedTo", params.appliedTo);
+      if (params.followUpBefore) query.set("followUpBefore", params.followUpBefore);
+      if (params.archived !== undefined) query.set("archived", String(params.archived));
+      if (params.sort) query.set("sort", params.sort);
+      if (params.cursor) query.set("cursor", params.cursor);
+      if (params.limit) query.set("limit", String(params.limit));
       const suffix = query.toString() ? `?${query.toString()}` : "";
       return request<Page<JobSummary>>(`/jobs${suffix}`);
     },
@@ -160,6 +258,21 @@ export const api = {
         method: "POST",
         body: JSON.stringify(input),
       });
+    },
+    updateEvent(
+      jobId: string,
+      eventId: string,
+      input: {
+        title?: string;
+        notes?: string | null;
+        scheduledFor?: string;
+        allDay?: boolean;
+      },
+    ): Promise<JobDetail["timeline"][number]> {
+      return request<JobDetail["timeline"][number]>(
+        `/jobs/${jobId}/events/${eventId}`,
+        { method: "PATCH", body: JSON.stringify(input) },
+      );
     },
   },
   resources: {
@@ -220,10 +333,10 @@ export const api = {
     list(): Promise<{ items: Integration[] }> {
       return request<{ items: Integration[] }>("/integrations");
     },
-    connectNotion(token: string): Promise<Integration> {
+    connectNotion(token?: string): Promise<Integration> {
       return request<Integration>("/integrations/notion/connect", {
         method: "POST",
-        body: JSON.stringify({ token }),
+        body: JSON.stringify(token ? { token } : {}),
       });
     },
     notionDatabases(query?: string): Promise<{ items: IntegrationDatabase[] }> {
@@ -241,6 +354,33 @@ export const api = {
     startGoogleCalendar(): Promise<{ authUrl: string }> {
       return request<{ authUrl: string }>(
         "/integrations/google-calendar/oauth/start",
+      );
+    },
+    startGmailOAuth(): Promise<{ authUrl: string }> {
+      return request<{ authUrl: string }>(
+        "/integrations/gmail/oauth/start",
+        json({}),
+      );
+    },
+    startGmailSync(): Promise<GmailSyncRun> {
+      return request<GmailSyncRun>("/integrations/gmail/sync", json({}));
+    },
+    advanceGmailSync(runId: string): Promise<GmailSyncRun> {
+      return request<GmailSyncRun>(
+        `/integrations/gmail/sync/${encodeURIComponent(runId)}/step`,
+        json({}),
+      );
+    },
+    gmailReviews(): Promise<{ items: GmailReviewItem[] }> {
+      return request<{ items: GmailReviewItem[] }>("/integrations/gmail/review");
+    },
+    resolveGmailReview(
+      messageId: string,
+      status: JobStatus | "ignore",
+    ): Promise<{ status: "processed" | "ignored"; jobId: string }> {
+      return request(
+        `/integrations/gmail/review/${encodeURIComponent(messageId)}`,
+        json({ status }),
       );
     },
     calendars(): Promise<{ items: IntegrationCalendar[] }> {
@@ -269,13 +409,16 @@ export const api = {
       });
     },
     createCalendarEvent(input: {
-      jobId: string;
-      jobEventId: string;
+      jobId?: string;
+      jobEventId?: string;
       title?: string;
+      description?: string;
+      location?: string;
       startsAt: string;
       endsAt?: string;
       allDay?: boolean;
       timeZone: string;
+      reminders?: { method: "popup"; minutes: number }[];
     }): Promise<{ calendarEventId: string; htmlLink: string | null }> {
       return request("/integrations/google-calendar/events", {
         method: "POST",
@@ -283,7 +426,7 @@ export const api = {
         body: JSON.stringify(input),
       });
     },
-    disconnect(provider: "notion" | "google_calendar"): Promise<void> {
+    disconnect(provider: "notion" | "google_calendar" | "gmail"): Promise<void> {
       return request<void>(`/integrations/${provider}`, { method: "DELETE" });
     },
   },

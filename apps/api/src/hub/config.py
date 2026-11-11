@@ -12,9 +12,11 @@ class Settings(BaseSettings):
     pin_pepper: str | None = None
     allow_signup: bool = False
     integration_encryption_key: str | None = None
+    notion_token: str | None = None
     google_client_id: str | None = None
     google_client_secret: str | None = None
     google_redirect_uri: str | None = None
+    google_gmail_redirect_uri: str | None = None
     web_origin: str = "http://127.0.0.1:3000"
 
     @field_validator("database_url")

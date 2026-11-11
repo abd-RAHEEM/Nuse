@@ -1,7 +1,20 @@
 from datetime import date, datetime
 from uuid import UUID, uuid4
 
-from sqlalchemy import JSON, Date, DateTime, ForeignKey, LargeBinary, String, Text, func
+from sqlalchemy import (
+    JSON,
+    Date,
+    DateTime,
+    ForeignKey,
+    Index,
+    LargeBinary,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+    text,
+)
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -228,6 +241,74 @@ class IntegrationConnection(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+
+
+class GmailSyncRun(Base):
+    __tablename__ = "gmail_sync_runs"
+    __table_args__ = (
+        Index(
+            "gmail_sync_runs_one_active_connection_idx",
+            "connection_id",
+            unique=True,
+            postgresql_where=text("status = 'running'"),
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    user_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE")
+    )
+    connection_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("integration_connections.id", ondelete="CASCADE")
+    )
+    mode: Mapped[str] = mapped_column(String(16))
+    status: Mapped[str] = mapped_column(String(16), default="running")
+    after_date: Mapped[date | None] = mapped_column(Date)
+    page_token: Mapped[str | None] = mapped_column(Text)
+    history_page_token: Mapped[str | None] = mapped_column(Text)
+    pending_message_ids: Mapped[list] = mapped_column(JSONB, default=list)
+    start_history_id: Mapped[str | None] = mapped_column(String(128))
+    latest_history_id: Mapped[str | None] = mapped_column(String(128))
+    messages_scanned: Mapped[int] = mapped_column(default=0)
+    jobs_matched: Mapped[int] = mapped_column(default=0)
+    jobs_updated: Mapped[int] = mapped_column(default=0)
+    review_queued: Mapped[int] = mapped_column(default=0)
+    unmatched_discarded: Mapped[int] = mapped_column(default=0)
+    last_error: Mapped[str | None] = mapped_column(String(500))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class GmailProcessedMessage(Base):
+    __tablename__ = "gmail_processed_messages"
+    __table_args__ = (
+        UniqueConstraint("user_id", "message_id", name="uq_gmail_processed_user_message"),
+        Index("gmail_processed_messages_user_status_idx", "user_id", "status"),
+    )
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    user_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE")
+    )
+    message_id: Mapped[str] = mapped_column(String(255))
+    thread_id: Mapped[str | None] = mapped_column(String(255))
+    job_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("jobs.id", ondelete="CASCADE")
+    )
+    event_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("job_events.id", ondelete="SET NULL")
+    )
+    sender: Mapped[str | None] = mapped_column(String(500))
+    subject: Mapped[str] = mapped_column(String(1000))
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    suggested_status: Mapped[str | None] = mapped_column(String(32))
+    status: Mapped[str] = mapped_column(String(16))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class ExternalLink(Base):

@@ -35,6 +35,7 @@ export function NuseShell({ children, title, eyebrow }: { children: ReactNode; t
   const router = useRouter();
   const [captureOpen, setCaptureOpen] = useState(false);
   const [authChecked, setAuthChecked] = useState(false);
+  const [profile, setProfile] = useState({ name: "Abdul", initials: "AR" });
 
   useEffect(() => {
     let active = true;
@@ -50,7 +51,18 @@ export function NuseShell({ children, title, eyebrow }: { children: ReactNode; t
       return () => { active = false; };
     }
     void api.auth.me()
-      .then(() => { if (active) setAuthChecked(true); })
+      .then((user) => {
+        if (!active) return;
+        const name = user.displayName?.trim() || user.username;
+        const initials = name
+          .split(/\s+/)
+          .slice(0, 2)
+          .map((part) => part[0] ?? "")
+          .join("")
+          .toUpperCase();
+        setProfile({ name, initials });
+        setAuthChecked(true);
+      })
       .catch(() => { if (active) router.replace("/login"); });
     return () => { active = false; };
   }, [router]);
@@ -72,7 +84,7 @@ export function NuseShell({ children, title, eyebrow }: { children: ReactNode; t
         </nav>
         <div className="rail-bottom">
           <button className="capture-rail-button" onClick={() => setCaptureOpen(true)}><Icon name="plus" size={17} /><span>Capture</span><kbd>C</kbd></button>
-          <div className="profile-chip"><span className="avatar">AR</span><span><strong>Abdul</strong><small>Personal desk</small></span><span className="profile-dot" /></div>
+          <div className="profile-chip"><span className="avatar">{profile.initials}</span><span><strong>{profile.name}</strong><small>Personal desk</small></span><span className="profile-dot" /></div>
         </div>
       </aside>
       <main className="main-column">

@@ -7,7 +7,12 @@ import { api, apiMode, ApiError } from "@/lib/api/client";
 
 type AuthMode = "login" | "signup";
 
-const USER_KEY = "nuse-demo-user";
+const USER_KEY_PREFIX = "nuse-demo-user:";
+
+function isWeakPin(value: string): boolean {
+  return new Set(value).size === 1 ||
+    ["012345", "123456", "654321"].includes(value);
+}
 
 export function AuthScreen({ mode }: { mode: AuthMode }) {
   const [username, setUsername] = useState("");
@@ -31,11 +36,15 @@ export function AuthScreen({ mode }: { mode: AuthMode }) {
       setError("Your PIN must contain exactly six digits.");
       return;
     }
+    if (mode === "signup" && isWeakPin(pin)) {
+      setError("Choose a PIN without repeated or sequential digits.");
+      return;
+    }
 
     if (apiMode === "live") {
       try {
         if (mode === "signup") {
-          await api.auth.signup(username.toLowerCase(), pin);
+          await api.auth.signup(username.toLowerCase(), pin, displayName.trim() || undefined);
         } else {
           await api.auth.login(username.toLowerCase(), pin);
         }
@@ -47,11 +56,11 @@ export function AuthScreen({ mode }: { mode: AuthMode }) {
     }
 
     if (mode === "signup") {
-      if (localStorage.getItem(USER_KEY)) {
-        setError("This browser already has a Nuse desk. Sign in to continue.");
-        return;
-      }
-      localStorage.setItem(USER_KEY, JSON.stringify({ username: username.toLowerCase(), displayName: displayName.trim() || username }));
+      const normalizedUsername = username.toLowerCase();
+      localStorage.setItem(
+        `${USER_KEY_PREFIX}${normalizedUsername}`,
+        JSON.stringify({ username: normalizedUsername, displayName: displayName.trim() || username }),
+      );
       setNotice("Your Nuse desk is ready. You can sign in now.");
       return;
     }
@@ -70,7 +79,7 @@ export function AuthScreen({ mode }: { mode: AuthMode }) {
         <label>Username<input value={username} onChange={(event) => setUsername(event.target.value)} placeholder="e.g. abdul.raheem" autoComplete="username" /></label>
         <p className="field-hint">3–32 characters: lowercase letters, numbers, dots, underscores, or hyphens.</p>
         <label>Six-digit PIN<input className="pin-input" value={pin} onChange={(event) => setPin(event.target.value.replace(/\D/g, "").slice(0, 6))} placeholder="••••••" inputMode="numeric" autoComplete={mode === "login" ? "current-password" : "new-password"} maxLength={6} /></label>
-        {mode === "signup" ? <div className="auth-note"><span>i</span><p>This PIN cannot be recovered in v1. Choose one you can remember and do not reuse a banking PIN.</p></div> : <label className="remember-row"><input type="checkbox" checked={remember} onChange={(event) => setRemember(event.target.checked)} /> Keep me signed in on this browser</label>}
+        {mode === "signup" ? <div className="auth-note"><span>i</span><p>This PIN cannot be recovered in v1. Avoid repeated or sequential digits, and do not reuse a banking PIN.</p></div> : <label className="remember-row"><input type="checkbox" checked={remember} onChange={(event) => setRemember(event.target.checked)} /> Keep me signed in on this browser</label>}
         {error && <p className="auth-error" role="alert">{error}</p>}
         {notice && <p className="auth-success" role="status">{notice}</p>}
         <button className="primary-button wide" type="submit">{mode === "login" ? "Open Nuse" : "Create my desk"}<span aria-hidden="true">→</span></button>

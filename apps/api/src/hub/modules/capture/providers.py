@@ -86,7 +86,11 @@ def _job_result(
 ) -> dict:
     job = _first_json_ld(parser, "JobPosting")
     organization = job.get("hiringOrganization")
-    company = organization.get("name") if isinstance(organization, dict) else None
+    company = (
+        organization.get("name")
+        if isinstance(organization, dict)
+        else parser.meta.get("og:site_name")
+    )
     location = job.get("jobLocation")
     if isinstance(location, list):
         location = location[0] if location else None
@@ -106,12 +110,33 @@ def _job_result(
     identifier = job.get("identifier")
     external_id = identifier.get("value") if isinstance(identifier, dict) else identifier
     text = _plain_text(parser)
-    title = job.get("title") or parser.meta.get("og:title") or "".join(parser.title_parts).strip()
+    title = (
+        job.get("title")
+        or parser.meta.get("og:title")
+        or "".join(parser.title_parts).strip()
+    )
+    if title and company and not job.get("title"):
+        title = re.sub(
+            rf"^{re.escape(str(company))}\s*[-|–]\s*",
+            "",
+            title,
+            flags=re.IGNORECASE,
+        )
+        title = re.sub(r"\s*[-|]\s*Remote Job$", "", title, flags=re.IGNORECASE)
     description = job.get("description") or parser.meta.get("og:description") or text
     return {
         "type": "job",
-        "company": _field(company, "json-ld"),
-        "title": _field(title or None, "json-ld" if job.get("title") else "og:title"),
+        "company": _field(
+            company, "json-ld" if isinstance(organization, dict) else "og:site_name"
+        ),
+        "title": _field(
+            title or None,
+            "json-ld"
+            if job.get("title")
+            else "og:title"
+            if parser.meta.get("og:title")
+            else "html",
+        ),
         "location": _field(location, "json-ld"),
         "employmentType": _field(job.get("employmentType"), "json-ld"),
         "workMode": _field(
